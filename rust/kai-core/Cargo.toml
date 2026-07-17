@@ -1,0 +1,31 @@
+[package]
+name = "kai-core"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance world-model and variational-free-energy kernels for Kai"
+license = "MIT"
+repository = "https://github.com/axiomtree/axiom_horizon"
+
+[dependencies]
+ndarray = "0.15"
+
+# Optional Python bindings. Enabled with `cargo build --features python`.
+[dependencies.pyo3]
+version = "0.21"
+features = ["extension-module", "abi3-py39"]
+optional = true
+
+# NumPy bridge (PyArray <-> ndarray conversion). Enabled with `python`.
+[dependencies.numpy]
+version = "0.21"
+optional = true
+
+[features]
+default = []
+# Build the C-ABI/Python extension module in addition to the Rust library.
+python = ["pyo3", "numpy"]
+
+[lib]
+name = "kai_core"
+# `cdylib` is required only when the `python` feature is active; harmless otherwise.
+crate-type = ["lib", "cdylib"]

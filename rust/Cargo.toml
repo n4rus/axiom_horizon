@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "kai-core",
+    "kai-mlir",
+    "physics-dialect",
+    "kai-standalone",
+    "kai-fusion",
+]
+
+[profile.release]
+lto = true
+opt-level = 3
+panic = "abort"

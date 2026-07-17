@@ -1,0 +1,18 @@
+[package]
+name = "physics-dialect"
+version = "0.1.0"
+edition = "2021"
+description = "Kai custom physics dialect: attention geometry, time dilation, variational free energy"
+license = "MIT"
+repository = "https://github.com/axiomtree/axiom_horizon"
+
+[dependencies]
+kai-mlir = { path = "../kai-mlir" }
+ndarray = "0.15"
+
+[features]
+default = []
+
+[lib]
+name = "physics_dialect"
+crate-type = ["lib"]

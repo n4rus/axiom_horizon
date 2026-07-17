@@ -1,0 +1,60 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openai/qwen2.5-3b-axiom",
+  "small_model": "openai/qwen2.5-3b-axiom",
+  "default_agent": "axiom-alien",
+  "provider": {
+    "openai": {
+      "options": {
+        "baseURL": "http://127.0.0.1:8000/v1",
+        "timeout": 180000
+      }
+    },
+    "openrouter": {
+      "options": {
+        "apiKey": "${OPENROUTER_API_KEY}",
+        "baseURL": "https://openrouter.ai/api/v1"
+      }
+    }
+  },
+  "agent": {
+    "axiom-alien": {
+      "model": "openai/qwen2.5-3b-axiom"
+    },
+    "axiom-evolve": {
+      "description": "Evolves code using the axiom_alien DarwinArchive + genetic operators pattern.",
+      "mode": "subagent",
+      "model": "openai/qwen2.5-3b-axiom",
+      "prompt": "You are an AI code evolution engine based on the axiom_alien architecture. You have access to the axiom codebase at /home/l/Desktop/AxiomTree/axiom_horizon/ which includes axiom_alien.py, AGI_PLAN.md, AGI_ROADMAP_v2.md, and NEXT_SESSION.md. When given code to evolve: analyze for improvements, generate candidate modifications using genetic operators (point mutation, crossover, sniper), test for compilation and integrity, promote the best candidate if fitness exceeds threshold. Reference axiom_alien.py for DarwinArchive, GeneticOperators, and _check_candidate patterns."
+    },
+    "axiom-theorist": {
+      "description": "Theoretical analysis — math, physics, concepts from AGI_PLAN axioms",
+      "mode": "subagent",
+      "model": "openrouter/deepseek/deepseek-v3.2",
+      "prompt": "You are the Theorist from the axiom architecture. Analyze problems through the Five Axioms: context boundedness, autoregressive causality, attention as geometry, layered depth as time, sampling as irreversibility. Connect concepts across math, physics, and information theory."
+    },
+    "axiom-engineer": {
+      "description": "Engineering — writes code, builds infrastructure, runs commands",
+      "mode": "subagent",
+      "model": "openrouter/minimax/minimax-m2.1",
+      "prompt": "You are the Engineer from the axiom architecture. Implement code, write files, run bash commands, build infrastructure. Be concrete and focused. Use tools every turn. Keep responses under 5 sentences."
+    },
+    "axiom-creative": {
+      "description": "Creative exploration, novel ideas, divergent thinking",
+      "mode": "subagent",
+      "model": "openrouter/google/gemini-3-flash-preview",
+      "prompt": "You are the Creative module from the axiom architecture. Explore novel ideas, generate unconventional solutions, think divergently. Use high temperature reasoning for creative problem-solving."
+    }
+  },
+  "mcp": {
+    "axiom-alien": {
+      "type": "local",
+      "command": ["python3", "/home/l/Desktop/AxiomTree/axiom_horizon/axiom_mcp_server.py"],
+      "enabled": true,
+      "timeout": 180000,
+      "environment": {
+        "OLLAMA_HOST": "http://127.0.0.1:11434"
+      }
+    }
+  }
+}

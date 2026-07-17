@@ -1,0 +1,18 @@
+{
+  "workspace": "workspace",
+  "server_port": 5000,
+  "debug_mode": true,
+  "authentication": {
+    "enabled": false,
+    "require_git_token": true
+  },
+  "api_keys": {},
+  "test_network_connection": true,
+  "enable_auto_save": true,
+  "max_file_size_mb": 10,
+  "allowed_extensions": [".py", ".js", ".ts", ".rs", ".go", ".java", ".cpp", ".c", ".json", ".md"],
+  "rate_limiting": {
+    "max_requests_per_minute": 60,
+    "max_retries": 3
+  }
+}

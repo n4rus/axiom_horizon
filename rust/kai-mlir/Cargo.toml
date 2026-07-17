@@ -1,0 +1,16 @@
+[package]
+name = "kai-mlir"
+version = "0.1.0"
+edition = "2021"
+description = "Self-contained MLIR-style intermediate representation for Kai's dialects"
+license = "MIT"
+repository = "https://github.com/axiomtree/axiom_horizon"
+
+[dependencies]
+
+[features]
+default = []
+
+[lib]
+name = "kai_mlir"
+crate-type = ["lib"]

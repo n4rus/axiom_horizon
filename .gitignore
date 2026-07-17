@@ -1,0 +1,31 @@
+# API keys / secrets
+opencode_secrets.json
+.env
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# State / data
+.axiom_state/
+attractor_state.json
+alien.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large embedded repos
+llvm-project/
+sources/
+rust/target/

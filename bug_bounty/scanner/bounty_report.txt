@@ -1,0 +1,116 @@
+============================================================
+SMART CONTRACT BOUNTY DISCOVERY REPORT
+Generated: 2026-07-11 02:11:37
+============================================================
+
+## Immunefi Programs (Top Payouts)
+----------------------------------------
+
+Lido Finance
+  Max Bounty: $2,500,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/lidofinance
+  Focus: Reentrancy, Oracle Manipulation, Access Control, Flash Loan Attacks
+  Description: Liquid staking protocol, largest DeFi staking platform
+
+Mantle
+  Max Bounty: $2,000,000
+  Type: L2 | Chain: Ethereum
+  GitHub: https://github.com/mantlenetworkio
+  Focus: Bridge Vulnerabilities, Sequencer Attacks, Fraud Proofs
+  Description: Ethereum L2 with optimistic rollup
+
+Morph
+  Max Bounty: $1,000,000
+  Type: L2 | Chain: Ethereum
+  GitHub: https://github.com/morph-l2
+  Focus: Bridge, Sequencer, Data Availability
+  Description: Ethereum L2 with optimistic rollup
+
+EigenLayer
+  Max Bounty: $1,000,000
+  Type: Restaking | Chain: Ethereum
+  GitHub: https://github.com/Layr-Labs
+  Focus: Slashing Logic, Delegation Attacks, Oracle Manipulation
+  Description: Restaking protocol for Ethereum
+
+Ethena
+  Max Bounty: $1,000,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/ethena-labs
+  Focus: Custody Risk, Derivatives, Oracle
+  Description: Synthetic dollar protocol
+
+Rocket Pool
+  Max Bounty: $500,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/rocket-pool
+  Focus: Node Operator Fraud, Withdrawal Attacks, MEV Extraction
+  Description: Decentralized Ethereum staking protocol
+
+Pendle
+  Max Bounty: $500,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/pendle-finance
+  Focus: Yield Oracle, AMM Manipulation, Flash Loan
+  Description: Yield tokenization and trading
+
+Sommelier Finance
+  Max Bounty: $500,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/sommelier-finance
+  Focus: Vault Manipulation, Strategy Exploits, Oracle
+  Description: DeFi vault strategy protocol
+
+Gearbox Protocol
+  Max Bounty: $500,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/Gearbox-protocol
+  Focus: Leverage Attacks, Liquidation, Oracle
+  Description: Leveraged trading protocol
+
+Morpho
+  Max Bounty: $250,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/morpho-org
+  Focus: Interest Rate, Liquidation, Oracle
+  Description: Optimized lending protocol
+
+Spark
+  Max Bounty: $250,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/sparkpi-io
+  Focus: Interest Rate, Liquidation, Governance
+  Description: MakerDAO ecosystem lending protocol
+
+Kelp DAO
+  Max Bounty: $200,000
+  Type: DeFi | Chain: Ethereum
+  GitHub: https://github.com/kelp-dao
+  Focus: Restaking, Oracle, Flash Loan
+  Description: Liquid staking derivative
+
+Ambire Wallet
+  Max Bounty: $100,000
+  Type: Wallet | Chain: Multi-chain
+  GitHub: https://github.com/AmbireWallet
+  Focus: Account Abstraction, Signature, Relayer
+  Description: Smart contract wallet
+
+
+## GitHub Repos with Solidity Contracts
+----------------------------------------
+
+
+## Recommended Attack Vectors
+----------------------------------------
+
+    1. REENTRANCY: Check for external calls before state changes
+    2. ACCESS CONTROL: Test unauthorized function calls
+    3. ORACLE MANIPULATION: Test price feed manipulation
+    4. FLASH LOAN ATTACKS: Test atomic transactions
+    5. INTEGER OVERFLOW: Check unchecked arithmetic
+    6. FRONT-RUNNING: Test MEV extraction
+    7. LOGIC ERRORS: Test edge cases in math
+    8. UPGRADABLE CONTRACTS: Test proxy upgrade paths
+    
