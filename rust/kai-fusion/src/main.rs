@@ -690,6 +690,49 @@ fn generate_from_gguf_attractor(path: &str, prompt: &str, max_new: usize, temper
     generate_streaming(&cfg, &meta, path, prompt, max_new, temperature, top_p, Some(&engram), None, None, Some(attr_path));
 }
 
+/// Multi-agent generation: runs each agent kind sequentially with its own
+/// system prompt, pushes each agent's final hidden state to the shared attractor,
+/// and reports convergence to demonstrate agent-to-agent fixed-point coordination.
+fn multi_agent_generate(
+    path: &str,
+    query: &str,
+    max_new: usize,
+    temperature: f32,
+    top_p: f32,
+    attractor: Option<&str>,
+    agents: Vec<routes::AgentKind>,
+) {
+    let attr_path = attractor.unwrap_or(".axiom_state/kai_multi_agent_attractor.json");
+    let meta = match gguf::read_kv(path) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("meta: {e}"); return; }
+    };
+    let cfg = match gguf::build_config(&meta) {
+        Some(c) => c,
+        None => { eprintln!("could not build Config"); return; }
+    };
+    let engram = body::BodyEngram::new(".");
+
+    eprintln!("[multi-agent] {} agents, attractor={}", agents.len(), attr_path);
+
+    for (i, kind) in agents.iter().enumerate() {
+        let sys_prompt = routes::system_prompt(*kind);
+        let prompt = format!("[{}: {}]\n\n{}\n\nQuery: {}", kind.label(), sys_prompt, query, query);
+        eprintln!("[multi-agent] agent {}/{} ({}) generating...", i+1, agents.len(), kind.label());
+        generate_streaming(&cfg, &meta, path, &prompt, max_new, temperature, top_p, Some(&engram), None, None, Some(attr_path));
+        match crate::attractor::convergence(attr_path, 10) {
+            Ok((conv, n)) => eprintln!("[multi-agent] after {}: convergence={:.4} (n={})", kind.label(), conv, n),
+            Err(e) => eprintln!("[multi-agent] convergence error: {e}"),
+        }
+    }
+
+    eprintln!("[multi-agent] all {} agents complete", agents.len());
+    match crate::attractor::convergence(attr_path, 10) {
+        Ok((conv, n)) => eprintln!("[multi-agent] final convergence={:.4} (n={})", conv, n),
+        Err(e) => eprintln!("[multi-agent] final convergence error: {e}"),
+    }
+}
+
 /// Generate text with multi-modal vision input.
 /// Loads the text model and optional vision tower GGUF, encodes the image,
 /// prepends projected vision embeddings to text token embeddings, and generates.
@@ -3250,6 +3293,57 @@ fn main() {
                 generate_from_gguf_attractor(path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp, attractor_path.as_deref());
             }
         }
+    } else if args.len() >= 4 && args[1] == "multi-agent" {
+        let path = &args[2];
+        let query = args[3..].join(" ");
+
+        // Extract --agents flag (comma-separated list of agent kinds, or "all")
+        let mut agent_kinds: Vec<routes::AgentKind> = Vec::new();
+        let mut attractor_path: Option<String> = None;
+        // Pre-scan for --agents and --attractor flags
+        let mut ai = 3;
+        while ai < args.len() {
+            if args[ai] == "--agents" && ai + 1 < args.len() {
+                let agents_str = args[ai + 1].as_str();
+                if agents_str == "all" {
+                    agent_kinds = routes::AgentKind::all();
+                } else {
+                    for a in agents_str.split(',') {
+                        match a.trim().to_lowercase().as_str() {
+                            "code" => agent_kinds.push(routes::AgentKind::Code),
+                            "math" | "science" => agent_kinds.push(routes::AgentKind::MathScience),
+                            "creative" | "art" => agent_kinds.push(routes::AgentKind::Creative),
+                            "analysis" | "research" => agent_kinds.push(routes::AgentKind::Analysis),
+                            "general" => agent_kinds.push(routes::AgentKind::General),
+                            _ => eprintln!("[multi-agent] unknown agent kind: {a}"),
+                        }
+                    }
+                }
+                ai += 2;
+            } else if args[ai] == "--attractor" && ai + 1 < args.len() {
+                attractor_path = Some(args[ai + 1].clone());
+                ai += 2;
+            } else {
+                ai += 1;
+            }
+        }
+
+        if agent_kinds.is_empty() {
+            let primary = routes::RouteConfig::from_query(&query);
+            agent_kinds.push(primary.kind);
+            for ak in routes::AgentKind::all() {
+                if ak != primary.kind {
+                    agent_kinds.push(ak);
+                }
+            }
+        }
+
+        let temperature = 1.0;
+        let top_p = 0.9;
+        let max_new = 16;
+
+        multi_agent_generate(path, &query, max_new, temperature, top_p, attractor_path.as_deref(), agent_kinds);
+
     } else if args.len() >= 4 && args[1] == "assimilate" {
         let path = &args[2];
         let text = args[3..].join(" ");
