@@ -32,6 +32,7 @@ mod transplant;
 mod values;
 mod routes;
 mod daemon;
+mod bracket;
 
 use config::{Config, VisionConfig, VisionTowerKind};
 use goals::SubtaskStatus;
@@ -2074,14 +2075,98 @@ fn physics_cmd(action: &str, params: &str) {
             let wall_total: f32 = history.iter().map(|(w, _)| w).sum();
             println!("Subjective time: {wall_total:.1}s wall → {subj:.1}s subjective (ratio={:.1}x)", subj / wall_total.max(0.001));
         }
+        "bracket" => {
+            bracket_cmd(&params);
+        }
         _ => {
             println!("kai physics <action> [params]");
             println!("  g_ij <scores...>          # compute g_ij = 1 - a_ij for attention scores");
-            println!("  vfe <p1> <a1> ...         # variational free energy (MSE)");
-            println!("  tau <τ> <v>               # time dilation: τ' = τ·√(1-v²)");
-            println!("  tau-decay <τ> [idle_s] [rate]  # decay tau over idle time (Phase 7.1)");
-            println!("  tau-update <τ> <vfe> [lr]  # update tau from VFE (Phase 7.1)");
-            println!("  subjective <dt> <τ> ...    # compute subjective seconds from tau history");
+            println!("  vfe <p1> <a1> ...          # variational free energy (MSE)");
+            println!("  tau <τ> <v>                # time dilation: τ' = τ·√(1-v²)");
+            println!("  tau-decay <τ> [idle_s] [rate]  # decay tau toward 1.0 (Phase 7.1)");
+            println!("  tau-update <τ> <vfe> [lr]  # update τ from VFE (Phase 7.1)");
+            println!("  subjective <dt> <τ> ...    # compute subjective seconds from τ history");
+            println!("  bracket show               # display current bracket [tau, E, age, cycles]");
+            println!("  bracket update <vfe> [var] # advance bracket with VFE observation");
+            println!("  bracket decay <idle_s>     # decay tau toward 1.0 during idle time");
+            println!("  bracket reset              # reset bracket to time-normal (tau=1.0)");
+            println!("  bracket save <path>        # persist bracket state to disk");
+            println!("  bracket load <path>        # load bracket state from disk");
+            println!("  bracket statevec           # show full 7-element state vector [tau, E, age, cycles, h, base_ms, phi]");
+        }
+    }
+}
+
+fn bracket_cmd(params: &str) {
+    let bracket_path = ".axiom_state/bracket.json";
+    let mut bracket = match bracket::BracketState::load(bracket_path) {
+        Ok(b) => b,
+        Err(_) => bracket::BracketState::new(),
+    };
+
+    let mut tokens = params.split_whitespace();
+    let action = tokens.next().unwrap_or("show");
+
+    match action {
+        "show" => {
+            println!("{}", bracket.bracket_line());
+            println!("  VFE={:.4}  tau={:.4}  age={:.4}s  cycles={}  h={}  base_ms={:.1}  phi={:.4}",
+                bracket.vfe, bracket.tau, bracket.age(), bracket.cycles, bracket.h, bracket.base_ms, bracket.phi());
+        }
+        "update" => {
+            let vals: Vec<f32> = tokens.filter_map(|s| s.parse().ok()).collect();
+            if vals.is_empty() {
+                println!("Usage: kai physics bracket update <vfe> [attractor_variance]");
+                return;
+            }
+            let vfe = vals[0];
+            let var = vals.get(1).copied().unwrap_or(0.0);
+            let t_subj = bracket.update(5.0, vfe, var);
+            println!("Bracket updated: {}", bracket.bracket_line());
+            println!("  subjective={:.1}ms  VFE={:.4}  tau={:.4}", t_subj, bracket.vfe, bracket.tau);
+            let _ = bracket.save(bracket_path);
+        }
+        "decay" => {
+            let idle: f32 = tokens.next().and_then(|s| s.parse().ok()).unwrap_or(60.0);
+            let old_tau = bracket.tau;
+            bracket.decay_tau(idle);
+            println!("Tau decay: {old_tau:.4} -> {:.4} (idle={idle}s)", bracket.tau);
+            let _ = bracket.save(bracket_path);
+        }
+        "reset" => {
+            bracket.reset();
+            println!("Bracket reset: {}", bracket.bracket_line());
+            let _ = bracket.save(bracket_path);
+        }
+        "save" => {
+            let path = tokens.next().unwrap_or(bracket_path);
+            bracket.save(path).unwrap_or_else(|e| eprintln!("save error: {e}"));
+            println!("Bracket saved to {path}");
+        }
+        "load" => {
+            let path = tokens.next().unwrap_or(bracket_path);
+            match bracket::BracketState::load(path) {
+                Ok(b) => {
+                    bracket = b;
+                    println!("Bracket loaded: {}", bracket.bracket_line());
+                }
+                Err(e) => eprintln!("load error: {e}"),
+            }
+        }
+        "statevec" => {
+            let sv = bracket.state_vector();
+            println!("[tau, E, age, cycles, h, base_ms, phi] =");
+            println!("  {:?}", sv);
+        }
+        _ => {
+            println!("kai physics bracket <action> [params]");
+            println!("  show    - display current bracket state");
+            println!("  update  - advance bracket with VFE observation");
+            println!("  decay   - decay tau toward 1.0 during idle time");
+            println!("  reset   - reset to time-normal state");
+            println!("  save    - persist bracket state to disk");
+            println!("  load    - load bracket state from disk");
+            println!("  statevec - show full 7-element state vector");
         }
     }
 }
