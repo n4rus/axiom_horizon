@@ -34,6 +34,7 @@ mod routes;
 mod daemon;
 mod bracket;
 mod fs_agent;
+mod browser;
 
 use config::{Config, VisionConfig, VisionTowerKind};
 use goals::SubtaskStatus;
@@ -3439,6 +3440,31 @@ fn main() {
         }
         if code != 0 {
             std::process::exit(code);
+        }
+    } else if args.len() >= 3 && args[1] == "browse" {
+        let url = args[2].as_str();
+        match browser::browse_url(url) {
+            Ok(text) => {
+                let truncated = if text.len() > 8000 {
+                    format!("{}...\n[truncated to 8000 chars]", &text[..8000])
+                } else {
+                    text
+                };
+                println!("{truncated}");
+            }
+            Err(e) => {
+                eprintln!("browse error: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else if args.len() >= 3 && args[1] == "search" {
+        let query = args[2..].join(" ");
+        match browser::search(&query) {
+            Ok(results) => println!("{results}"),
+            Err(e) => {
+                eprintln!("search error: {e}");
+                std::process::exit(1);
+            }
         }
     } else if args.len() >= 4 && args[1] == "assimilate" {
         let path = &args[2];
