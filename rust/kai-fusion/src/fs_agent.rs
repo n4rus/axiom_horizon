@@ -301,12 +301,18 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn temp_dir() -> String {
-        let d = format!("/tmp/kai_fs_test_{}", std::process::id());
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
-    }
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temp_dir() -> String {
+    let pid = std::process::id();
+    let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let d = format!("/tmp/kai_fs_test_{}_{}", pid, n);
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(&d).unwrap();
+    d
+}
 
     #[test]
     fn test_fs_read_missing() {
