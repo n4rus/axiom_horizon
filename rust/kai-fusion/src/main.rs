@@ -35,6 +35,7 @@ mod daemon;
 mod bracket;
 mod fs_agent;
 mod browser;
+mod esp32;
 
 use config::{Config, VisionConfig, VisionTowerKind};
 use goals::SubtaskStatus;
@@ -3614,6 +3615,10 @@ fn main() {
         let action = &args[2];
         let params = args[3..].join(" ");
         daemon_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "esp32" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        esp32_cmd(action, &params);
     } else {
         println!("Kai-Fusion");
         println!("  kai launch opencode [gguf]   # REPL (tiny demo, or real GGUF decoder)");
@@ -3661,6 +3666,90 @@ fn main() {
         println!("  kai route <query>                    # classify query and show sub-agent routing");
         println!("  kai daemon start <gguf> [--attractor <path>]  # start 24/7 fixed-point daemon");
         println!("  kai daemon help                        # daemon options");
+        println!("  kai esp32 status                        # show PoGIE network node status");
+        println!("  kai esp32 bridge <port> [baud]          # connect ESP32 serial bridge");
+        println!("  kai esp32 energy                        # show energy grid status");
+        println!("  kai esp32 allocate <node_id> <watts>    # allocate watts to a PoGIE node");
+        println!("  kai esp32 sensor <name>                  # read sensor value from ESP32");
+        println!("  kai esp32 gpio <pin> <high|low>          # toggle GPIO pin on ESP32");
+    }
+}
+
+/// `kai esp32` — ESP32 PoGIE physical integration bridge.
+fn esp32_cmd(action: &str, params: &str) {
+    match action {
+        "status" => {
+            let proto = esp32::PogieProtocol::new(".axiom_state/kai_fusion_attractor.json", 500.0);
+            println!("{}", proto.network_report());
+        }
+        "bridge" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            let port = parts.get(0).copied().unwrap_or(esp32::DEFAULT_PORT);
+            let baud: u32 = parts.get(1).and_then(|b| b.parse().ok()).unwrap_or(esp32::DEFAULT_BAUD_RATE);
+            let mut bridge = esp32::Esp32Bridge::new(port, baud);
+            eprintln!("[esp32] connecting to {} @ {} baud...", port, baud);
+            match bridge.connect() {
+                Ok(true) => println!("[esp32] ✅ connected to ESP32-S3 on {} @ {} baud", port, baud),
+                Ok(false) => println!("[esp32] ⚠️  no ESP32 device detected on {} (hardware not connected)", port),
+                Err(e) => eprintln!("[esp32] error: {e}"),
+            }
+            println!("  Protocol: PoGIE (Process of Global Intelligence Evolution)");
+            println!("  Features: energy grid, GPIO control, sensor read, node coordination");
+        }
+        "energy" => {
+            let mut grid = esp32::EnergyGrid::new(1000.0);
+            println!("{}", grid.status_report());
+        }
+        "allocate" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai esp32 allocate <node_id> <watts>");
+                return;
+            }
+            let node_id = parts[0];
+            let watts: f32 = parts[1].parse().unwrap_or(0.0);
+            let mut grid = esp32::EnergyGrid::new(1000.0);
+            if grid.allocate(node_id, watts) {
+                println!("[esp32] ✅ allocated {:.1} W to '{}'", watts, node_id);
+            } else {
+                println!("[esp32] ❌ insufficient energy to allocate {:.1} W to '{}'", watts, node_id);
+            }
+        }
+        "sensor" => {
+            let sensor = params.trim();
+            if sensor.is_empty() {
+                eprintln!("Usage: kai esp32 sensor <name>  (temperature|humidity|power_w|voltage)");
+                return;
+            }
+            let mut bridge = esp32::Esp32Bridge::default();
+            match bridge.read_sensor(sensor) {
+                Ok(val) => println!("[esp32] sensor '{}': {:.2}", sensor, val),
+                Err(e) => eprintln!("[esp32] error: {e}"),
+            }
+        }
+        "gpio" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai esp32 gpio <pin> <high|low>");
+                return;
+            }
+            let pin: u8 = parts[0].parse().unwrap_or(0);
+            let state = parts.get(1).map(|s| s.to_lowercase()) == Some("high".to_string());
+            let mut bridge = esp32::Esp32Bridge::default();
+            match bridge.toggle_actuator(pin, state) {
+                Ok(r) => println!("[esp32] GPIO {} → {}: {}", pin, if state { "HIGH" } else { "LOW" }, r),
+                Err(e) => eprintln!("[esp32] error: {e}"),
+            }
+        }
+        _ => {
+            println!("ESP32 PoGIE bridge — physical integration for Kai AGI.");
+            println!("  kai esp32 status                        # show PoGIE network node status");
+            println!("  kai esp32 bridge <port> [baud]          # connect ESP32 serial bridge");
+            println!("  kai esp32 energy                        # show energy grid status");
+            println!("  kai esp32 allocate <node_id> <watts>    # allocate watts to a PoGIE node");
+            println!("  kai esp32 sensor <name>                  # read sensor value from ESP32");
+            println!("  kai esp32 gpio <pin> <high|low>          # toggle GPIO pin on ESP32");
+        }
     }
 }
 
