@@ -33,6 +33,7 @@ mod values;
 mod routes;
 mod daemon;
 mod bracket;
+mod fs_agent;
 
 use config::{Config, VisionConfig, VisionTowerKind};
 use goals::SubtaskStatus;
@@ -3429,6 +3430,16 @@ fn main() {
 
         multi_agent_generate(path, &query, max_new, temperature, top_p, attractor_path.as_deref(), agent_kinds);
 
+    } else if args.len() >= 3 && args[1] == "fs" {
+        let cmd = args[2].as_str();
+        let fs_args: Vec<&str> = args[3..].iter().map(|s| s.as_str()).collect();
+        let (output, code) = fs_agent::fs_cmd(cmd, &fs_args);
+        if !output.is_empty() {
+            println!("{output}");
+        }
+        if code != 0 {
+            std::process::exit(code);
+        }
     } else if args.len() >= 4 && args[1] == "assimilate" {
         let path = &args[2];
         let text = args[3..].join(" ");
@@ -3594,6 +3605,7 @@ fn main() {
         println!("  kai fuse <gguf> \"<text>\" [iters] [lr] [seed] [attractor.json]  # assimilate seeded by the 10-arch attractor");
         println!("  kai train <gguf> \"<text>\" [iters] [lr]  # full backward pass training (Phase 2)");
         println!("  kai chunked-train <gguf> <text> [iters] [lr] [distill_lambda] [teacher_path]  # chunked training with optional distillation");
+        println!("  kai fs <command> [args]  # file system agent (read/write/glob/grep/list/stat/edit/rm/mkdir/find/cat)");
         println!("  kai geodesic <gguf> <text> [threshold] [min_chunk]  # geodesic chunk boundaries");
         println!("  kai darwin <archive_path> [threshold] [max_pop]  # Darwin Archive self-improvement");
         println!("  kai engram list|info|clear|delete  # semantic memory operations");

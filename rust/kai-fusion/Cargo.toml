@@ -25,3 +25,4 @@ syn = { version = "2", features = ["full", "extra-traits", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 image = "0.24"
+glob = "0.3"
