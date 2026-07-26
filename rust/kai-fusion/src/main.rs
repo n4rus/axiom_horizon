@@ -3,25 +3,44 @@
 //! controller, and can inventory the real local GGUF weights via `kai inspect`.
 
 mod attractor;
+mod awareness;
 mod bert;
 mod body;
 mod chunked;
 mod config;
 mod darwin;
+mod distributed;
 mod engine;
+mod goals;
 mod gen;
 mod gguf;
+mod gguf_write;
 mod model;
+mod moe;
+mod mla;
+mod linear_attn;
+mod assimilate;
 mod scm;
+mod selfmod;
 mod tok;
 mod vfe;
+mod vision;
+mod loader;
+mod memory;
+mod merge;
+mod transplant;
+mod values;
+mod routes;
+mod daemon;
 
-use config::Config;
-use model::Weights;
+use config::{Config, VisionConfig, VisionTowerKind};
+use goals::SubtaskStatus;
+use model::{Weights, FreezeConfig};
 use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use rand::Rng;
 use scm::EngramInterface;
 use kai_mlir::{DialectRegistry, Value as MlrValue, AttributeSet};
@@ -513,6 +532,111 @@ fn sample_top_p(logits: &[f32], temperature: f32, top_p: f32) -> usize {
 
 /// Greedy generation from a real llama-format GGUF.
 /// Uses fast f32-cached path for small models, streaming (one layer at a time) for large ones.
+/// Generate with RAG: queries vector memory store and injects similar memories into context.
+fn generate_with_rag(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32) {
+    let db_path = ".axiom_state/kai_memory.db";
+    let store = memory::MemoryStore::new(db_path, 10000);
+    if store.len() == 0 {
+        eprintln!("RAG: no memories in store (run `kai memory ingest` first)");
+        generate_from_gguf(path, prompt, max_new, temperature, top_p);
+        return;
+    }
+
+    // Compute query embedding using the model itself
+    let query_emb = match embed_to_vec(path, prompt) {
+        Some(e) => e,
+        None => { generate_from_gguf(path, prompt, max_new, temperature, top_p); return; }
+    };
+
+    let results = store.search(&query_emb, 5);
+    if results.is_empty() {
+        eprintln!("RAG: no similar memories found");
+        generate_from_gguf(path, prompt, max_new, temperature, top_p);
+        return;
+    }
+
+    // Build context from memories
+    let mut ctx_parts = Vec::new();
+    for (mem, score) in &results {
+        if score > &0.3 {
+            ctx_parts.push(format!("[context: {}]", mem.text));
+        }
+    }
+    let context = ctx_parts.join(" ");
+    let augmented = format!("{}\n\n---\nQuery: {}\n", context, prompt);
+    eprintln!("RAG: {} memories injected (top score={:.4})", results.len(), results[0].1);
+    generate_from_gguf(path, &augmented, max_new, temperature, top_p);
+}
+
+/// Full-model generation: loads all weights at once, handles any architecture.
+/// Used as fast path for small models and as fallback for non-MHA architectures.
+fn generate_full(cfg: &Config, meta: &HashMap<String, gguf::GgufMeta>, path: &str,
+                 prompt: &str, max_new: usize, temperature: f32, _top_p: f32) {
+    use gguf::load_tensors;
+    let tok = match tok::Tokenizer::from_gguf(meta) {
+        Some(t) => t,
+        None => { eprintln!("no tokenizer in GGUF"); return; }
+    };
+    let (_ver, map, _nt, _nk) = match load_tensors(path) {
+        Ok(x) => x,
+        Err(e) => { eprintln!("load tensors failed: {e}"); return; }
+    };
+    let w = match model::Weights::from_gguf(&map, cfg) {
+        Ok(w) => w,
+        Err(e) => { eprintln!("model load failed: {e}"); return; }
+    };
+    let ids = tok.encode(prompt);
+    let t = ids.len().min(cfg.max_seq);
+    let toks: Vec<usize> = ids.iter().take(t).cloned().collect();
+    if toks.is_empty() {
+        eprintln!("empty prompt");
+        return;
+    }
+    // Greedy generation loop
+    let mut all_ids = toks.clone();
+    let eos = tok.eos;
+    eprintln!("generating (full model, {} params)...", cfg.estimated_f32_gb() as u64);
+    for step in 0..max_new {
+        let (logits, _cache) = w.forward(cfg, &all_ids);
+        let last = logits.row(logits.nrows() - 1);
+        let next = if temperature > 0.0 {
+            // Apply temperature and sample
+            let mut scaled: Vec<f32> = last.iter().map(|&x| (x / temperature).exp()).collect();
+            let sum: f32 = scaled.iter().sum();
+            if sum > 0.0 {
+                for v in &mut scaled { *v /= sum; }
+                let mut rng = 42u64;
+                let r = |rng: &mut u64| { *rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1); *rng as f32 / u64::MAX as f32 };
+                let p = r(&mut rng);
+                let mut cum = 0.0f32;
+                let mut selected = 0;
+                for (i, &v) in scaled.iter().enumerate() {
+                    cum += v;
+                    if p <= cum { selected = i; break; }
+                }
+                selected
+            } else { 0 }
+        } else {
+            // Argmax
+            last.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        };
+        let next = next.min(cfg.vocab_size - 1);
+        all_ids.push(next);
+        let s = tok.decode(&[next]);
+        print!("{s}");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        if next == eos { break; }
+        if step % 8 == 0 { eprint!("."); }
+    }
+    println!();
+    eprintln!("\ngenerated {} tokens", all_ids.len() - toks.len());
+}
+
 fn generate_from_gguf(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32) {
     let meta = match gguf::read_kv(path) {
         Ok(m) => m,
@@ -528,12 +652,188 @@ fn generate_from_gguf(path: &str, prompt: &str, max_new: usize, temperature: f32
             return;
         }
     };
+    // For MLA/MoE architectures, use full model path (streaming doesn't support MLA yet)
+    if cfg.is_mla() || cfg.is_moe() {
+        eprintln!("Model uses MLA/MoE — loading full model (may use ~{:.1} GB f32)", cfg.estimated_f32_gb());
+        return generate_full(&cfg, &meta, path, prompt, max_new, temperature, top_p);
+    }
     let engram = body::BodyEngram::new(".");
     let est_gb = cfg.estimated_f32_gb();
     if est_gb > 6.0 {
         eprintln!("Model ~{est_gb:.1} GB f32 — using streaming inference with semantic memory");
     }
-    generate_streaming(&cfg, &meta, path, prompt, max_new, temperature, top_p, Some(&engram), None, None);
+    generate_streaming(&cfg, &meta, path, prompt, max_new, temperature, top_p, Some(&engram), None, None, None);
+}
+
+/// Like `generate_from_gguf` but pushes the final hidden state to a shared
+/// attractor after generation — multi-agent fixed-point coordination.
+/// Uses the memory-efficient streaming path (loads one layer at a time).
+fn generate_from_gguf_attractor(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32, attractor: Option<&str>) {
+    let attr_path = match attractor {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            return generate_from_gguf(path, prompt, max_new, temperature, top_p);
+        }
+    };
+
+    let meta = match gguf::read_kv(path) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("meta: {e}"); return; }
+    };
+    let cfg = match gguf::build_config(&meta) {
+        Some(c) => c,
+        None => { eprintln!("could not build Config"); return; }
+    };
+    let engram = body::BodyEngram::new(".");
+
+    // Use streaming path (memory-efficient) with attractor push
+    generate_streaming(&cfg, &meta, path, prompt, max_new, temperature, top_p, Some(&engram), None, None, Some(attr_path));
+}
+
+/// Generate text with multi-modal vision input.
+/// Loads the text model and optional vision tower GGUF, encodes the image,
+/// prepends projected vision embeddings to text token embeddings, and generates.
+fn generate_with_vision(
+    model_path: &str,
+    vision_path: &str,
+    image_path: &str,
+    prompt: &str,
+    max_new: usize,
+    temperature: f32,
+    _top_p: f32,
+) {
+    // ---- Load text model ----
+    let meta = match gguf::read_kv(model_path) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("meta: {e}"); return; }
+    };
+    let mut cfg = match gguf::build_config(&meta) {
+        Some(c) => c,
+        None => { eprintln!("could not build Config"); return; }
+    };
+    let tok = match tok::Tokenizer::from_gguf(&meta) {
+        Some(t) => t,
+        None => { eprintln!("no tokenizer in GGUF"); return; }
+    };
+
+    // ---- Load vision tower ----
+    let (vision_weights, vision_cfg) = match vision::load_vision_gguf(vision_path) {
+        Ok(wc) => wc,
+        Err(e) => { eprintln!("vision load failed: {e}"); return; }
+    };
+    if vision_cfg.proj_dim != cfg.dim {
+        eprintln!(
+            "WARNING: vision proj_dim={} != text model dim={}. \
+             Projector maps to a different space — output may be degraded.",
+            vision_cfg.proj_dim, cfg.dim
+        );
+    }
+
+    // ---- Load and encode image ----
+    let image_size = vision_cfg.image_size;
+    let pixels = match vision::load_image(image_path, image_size) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("image load failed: {e}"); return; }
+    };
+    eprintln!("[vision] encoding image {image_path} -> {}x{}", image_size, image_size);
+    let vision_embeds = vision_weights.encode(&pixels, &vision_cfg);
+    let n_vision_tokens = vision_embeds.nrows();
+    eprintln!("[vision] got {n_vision_tokens} vision tokens");
+
+    // ---- Build combined embeddings ----
+    let ids = tok.encode(prompt);
+    let n_text = ids.len().min(cfg.max_seq.saturating_sub(n_vision_tokens));
+    let total_t = n_vision_tokens + n_text;
+    let d = cfg.dim;
+
+    // Load the model weights to get the embed table
+    use gguf::load_tensors;
+    let (_ver, map, _nt, _nk) = match load_tensors(model_path) {
+        Ok(x) => x,
+        Err(e) => { eprintln!("load tensors failed: {e}"); return; }
+    };
+    let w = match model::Weights::from_gguf(&map, &cfg) {
+        Ok(w) => w,
+        Err(e) => { eprintln!("model load failed: {e}"); return; }
+    };
+
+    // Build combined embedding matrix [vision_tokens + text_tokens, dim]
+    let mut embeds = Array2::zeros((total_t, d));
+    // Vision embeddings  
+    let vn = n_vision_tokens.min(embeds.nrows());
+    for i in 0..vn {
+        let vrow = vision_embeds.row(i);
+        for j in 0..d.min(vision_cfg.proj_dim) {
+            embeds[[i, j]] = vrow[j];
+        }
+    }
+    // Text embeddings from model's embed table
+    for (i, &tok_id) in ids.iter().take(n_text).enumerate() {
+        let idx = vn + i;
+        let tok_clamped = tok_id.min(cfg.vocab_size - 1);
+        let erow = w.embed.row(tok_clamped);
+        for j in 0..d {
+            embeds[[idx, j]] = erow[j];
+        }
+    }
+
+    // Enable vision in config
+    cfg.vision = vision_cfg.clone();
+
+    // ---- Generate ----
+    let eos = tok.eos;
+    let mut generated = Vec::new();
+    let mut current_embeds = embeds.clone();
+
+    eprintln!("generating (multi-modal, {} vision tokens + {} text tokens)...", n_vision_tokens, n_text);
+    for step in 0..max_new {
+        let (logits, _) = w.forward_with_embeddings(&cfg, &current_embeds);
+        let last = logits.row(logits.nrows() - 1);
+
+        let next = if temperature > 0.0 {
+            let mut scaled: Vec<f32> = last.iter().map(|&x| (x / temperature).exp()).collect();
+            let sum: f32 = scaled.iter().sum();
+            if sum > 0.0 {
+                for v in &mut scaled { *v /= sum; }
+                let mut rng = 42u64;
+                let r = |rng: &mut u64| { *rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1); *rng as f32 / u64::MAX as f32 };
+                let p = r(&mut rng);
+                let mut cum = 0.0f32;
+                let mut selected = 0;
+                for (i, &v) in scaled.iter().enumerate() {
+                    cum += v;
+                    if p <= cum { selected = i; break; }
+                }
+                selected
+            } else { 0 }
+        } else {
+            last.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        };
+        let next = next.min(cfg.vocab_size - 1);
+
+        generated.push(next);
+        let s = tok.decode(&[next]);
+        print!("{s}");
+        io::stdout().flush().ok();
+        if next == eos { break; }
+
+        // Extend embeddings for next token
+        let tok_embed: Array1<f32> = w.embed.row(next).to_owned();
+        let mut new_row = Array2::zeros((1, d));
+        for j in 0..d {
+            new_row[[0, j]] = tok_embed[j];
+        }
+        current_embeds = ndarray::concatenate(ndarray::Axis(0), &[current_embeds.view(), new_row.view()])
+            .unwrap_or(current_embeds);
+
+        if step % 8 == 0 { eprint!("."); }
+    }
+    println!();
+    eprintln!("\n[mml] generated {} tokens", generated.len());
 }
 
 /// Tunable physics hyperparameters for adaptive inference.
@@ -600,6 +900,7 @@ fn generate_streaming(
     engram: Option<&body::BodyEngram>,
     physics: Option<&PhysicsParams>,
     mut metrics_out: Option<&mut PhysicsMetrics>,
+    attractor_path: Option<&str>,  // memory-efficient attractor push
 ) {
     let tok = match tok::Tokenizer::from_gguf(meta) {
         Some(t) => t,
@@ -836,6 +1137,12 @@ fn generate_streaming(
         final_assim_lr = phys.assim_lr;
     }
 
+    let attractor_embedding = if attractor_path.is_some() {
+        Some(last_embedding.clone())
+    } else {
+        None
+    };
+
     if let Some(engram) = engram {
         if !last_embedding.is_empty() {
             let concept = if prompt.len() > 64 {
@@ -845,6 +1152,24 @@ fn generate_streaming(
             };
             engram.store_embedding(&concept, last_embedding);
             eprintln!("  engram: stored memory for \"{}\"", concept);
+        }
+    }
+
+    // ── Attractor push (memory-efficient, uses final hidden state from streaming) ──
+    if let Some(attr_path) = attractor_path {
+        if let Some(emb) = attractor_embedding {
+            if !emb.is_empty() {
+                let store_dim = 768.min(emb.len());
+                let store_vec: Vec<f32> = emb.iter().take(store_dim).copied().collect();
+                match crate::attractor::push(attr_path, &store_vec) {
+                    Ok(()) => eprintln!("[attractor] pushed final state (dim={}) to {attr_path}", store_dim),
+                    Err(e) => eprintln!("[attractor] push failed: {e}"),
+                }
+                match crate::attractor::convergence(attr_path, 10) {
+                    Ok((conv, n)) => eprintln!("[attractor] convergence={conv:.4} (n={n})"),
+                    Err(e) => eprintln!("[attractor] convergence error: {e}"),
+                }
+            }
         }
     }
 
@@ -886,6 +1211,8 @@ fn generate_streaming(
         cfg.dim, cfg.n_layers, cfg.vocab_size, ids.len()
     );
     println!("  text: {}", tok.decode(&ids));
+    #[cfg(feature = "gpu")]
+    crate::engine::invalidate_weight_cache();
 }
 
 /// Kai assimilation: minimize VFE over a target text by adjusting the decoder's
@@ -1233,6 +1560,393 @@ fn engram_cmd(action: &str, params: &str) {
     }
 }
 
+/// Embed text using a GGUF model and return the mean-pooled embedding vector.
+fn embed_to_vec(path: &str, text: &str) -> Option<Vec<f32>> {
+    let meta = gguf::read_kv(path).ok()?;
+    let cfg = gguf::build_config(&meta)?;
+    let tok = tok::Tokenizer::from_gguf(&meta)?;
+    let (_v, map, _nt, _nk) = gguf::load_tensors(path).ok()?;
+    let w = model::Weights::from_gguf(&map, &cfg).ok()?;
+    let ids = tok.encode(text);
+    Some(w.mean_pooled_hidden(&cfg, &ids))
+}
+
+/// Split text into chunks of roughly `max_chars` for embedding.
+/// Tries to break at sentence boundaries (`.!?\n`).
+fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    while start < text.len() {
+        let end = (start + max_chars).min(text.len());
+        // Find the last sentence boundary before end
+        let mut split = end;
+        if end < text.len() {
+            for i in (start..end).rev() {
+                if bytes[i] == b'.' || bytes[i] == b'!' || bytes[i] == b'?' || bytes[i] == b'\n' {
+                    split = i + 1;
+                    break;
+                }
+            }
+        }
+        if split <= start { split = end; } // no boundary found — hard split
+        chunks.push(text[start..split].trim().to_string());
+        start = split;
+    }
+    chunks.retain(|c| !c.is_empty() && c.len() > 20); // skip tiny chunks
+    chunks
+}
+
+/// Recursively crawl `dir`, find text files, chunk them, embed via GGUF, store.
+fn memory_ingest(dir: &str, gguf: &str, store: &mut memory::MemoryStore) {
+    use std::path::Path;
+    let text_extensions = ["txt", "md", "rs", "py", "go", "js", "ts", "html", "css",
+                           "json", "yaml", "yml", "toml", "xml", "sh", "c", "h", "cpp"];
+    let mut files_processed = 0usize;
+    let mut chunks_stored = 0usize;
+
+    if !Path::new(dir).exists() {
+        eprintln!("ingest: directory not found: {dir}");
+        return;
+    }
+
+    fn visit(dir: &Path, text_extensions: &[&str], gguf: &str,
+             store: &mut memory::MemoryStore,
+             files_processed: &mut usize, chunks_stored: &mut usize) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, text_extensions, gguf, store, files_processed, chunks_stored);
+                } else if path.is_file() {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if !text_extensions.contains(&ext) { continue; }
+                    let content = match std::fs::read_to_string(&path) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    *files_processed += 1;
+                    let chunks = chunk_text(&content, 512); // ~512 char chunks
+                    for chunk in &chunks {
+                        let emb = match embed_to_vec(gguf, chunk) {
+                            Some(e) => e,
+                            None => continue,
+                        };
+                        let tags = vec![ext.to_string(), "ingested".to_string()];
+                        let _id = store.add(chunk, &emb, tags);
+                        *chunks_stored += 1;
+                    }
+                    if *chunks_stored % 50 == 0 && *chunks_stored > 0 {
+                        eprintln!("  ingest: {} files, {} chunks stored...", *files_processed, *chunks_stored);
+                    }
+                }
+            }
+        }
+    }
+
+    visit(Path::new(dir), &text_extensions, gguf, store, &mut files_processed, &mut chunks_stored);
+    println!("ingest complete: {} files processed, {} chunks stored", files_processed, chunks_stored);
+}
+
+/// `kai memory`: Vector memory operations (store/search/list/clear/ingest).
+/// Backed by SQLite (`.kai_memory.db`).
+fn memory_cmd(action: &str, params: &str) {
+    let db_path = ".axiom_state/kai_memory.db";
+    if let Some(parent) = std::path::Path::new(db_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut store = memory::MemoryStore::new(db_path, 10000);
+
+    match action {
+        "store" => {
+            // kai memory store <gguf> <text> [tags...]
+            let parts: Vec<&str> = params.splitn(2, ' ').collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai memory store <gguf> <text> [tags]");
+                return;
+            }
+            let gguf = parts[0];
+            let rest = parts[1];
+            // Split off tags (comma-separated after last ` -- `)
+            let (text, tags) = if let Some(idx) = rest.rfind(" -- ") {
+                let t = rest[..idx].trim();
+                let tag_str = rest[idx + 4..].trim();
+                let tags: Vec<String> = tag_str.split(',').map(|s| s.trim().to_string()).collect();
+                (t, tags)
+            } else {
+                (rest.trim(), vec!["user".to_string()])
+            };
+            let emb = match embed_to_vec(gguf, text) {
+                Some(e) => e,
+                None => { eprintln!("embedding failed"); return; }
+            };
+            let id = store.add(text, &emb, tags);
+            println!("stored memory id={}  dim={}  text=\"{}\"", id, emb.len(), text);
+        }
+        "search" => {
+            // kai memory search <gguf> <query> [k=5]
+            let parts: Vec<&str> = params.splitn(3, ' ').collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai memory search <gguf> <query> [k]");
+                return;
+            }
+            let gguf = parts[0];
+            let query = parts[1];
+            let k: usize = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+            let emb = match embed_to_vec(gguf, query) {
+                Some(e) => e,
+                None => { eprintln!("embedding failed"); return; }
+            };
+            let results = store.search(&emb, k);
+            if results.is_empty() {
+                println!("no matching memories found");
+                return;
+            }
+            println!("top {} memories:", results.len());
+            for (i, (mem, score)) in results.iter().enumerate() {
+                let preview = if mem.text.len() > 80 {
+                    format!("{}...", &mem.text[..77])
+                } else {
+                    mem.text.clone()
+                };
+                println!("  #{:<3} score={:.4}  id={}  \"{}\"  [{}]",
+                         i + 1, score, mem.id, preview, mem.timestamp);
+            }
+        }
+        "list" => {
+            let n: usize = params.parse().unwrap_or(10);
+            let mems = store.list(n);
+            if mems.is_empty() {
+                println!("no memories stored");
+                return;
+            }
+            println!("recent memories (last {}):", mems.len());
+            for mem in &mems {
+                let preview = if mem.text.len() > 80 {
+                    format!("{}...", &mem.text[..77])
+                } else {
+                    mem.text.clone()
+                };
+                println!("  id={:<6} \"{}\"  [{}]  tags={:?}",
+                         mem.id, preview, mem.timestamp, mem.tags);
+            }
+        }
+        "clear" => {
+            let count = store.len();
+            store.clear();
+            println!("cleared {} memories", count);
+        }
+        "count" => {
+            println!("memories: {}", store.len());
+        }
+        "ingest" => {
+            // kai memory ingest <dir> <gguf>
+            let parts: Vec<&str> = params.splitn(2, ' ').collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai memory ingest <dir> <gguf>");
+                return;
+            }
+            let dir = parts[0];
+            let gguf = parts[1];
+            memory_ingest(dir, gguf, &mut store);
+        },
+        "web-ingest" => {
+            // kai memory web-ingest <url> <gguf>
+            let parts: Vec<&str> = params.splitn(2, ' ').collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai memory web-ingest <url> <gguf>");
+                return;
+            }
+            let url = parts[0];
+            let gguf = parts[1];
+            store.clear(); // temporary: start fresh for each web ingest (avoids dupes)
+            let chunks = memory_web_ingest(url, gguf, &mut store);
+            if chunks > 0 {
+                println!("web-ingest: stored {} chunks from {url}", chunks);
+            }
+        },
+        "ingest-par" => {
+            // kai memory ingest-par <dir> <gguf> [max_workers]
+            let parts: Vec<&str> = params.splitn(3, ' ').collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai memory ingest-par <dir> <gguf> [max_workers]");
+                return;
+            }
+            let dir = parts[0];
+            let gguf = parts[1];
+            let max_workers: usize = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+            let store_path = db_path.to_string();
+            eprintln!("ingest-par: crawling {dir} with up to {max_workers} workers...");
+            // Use rayon for parallel file processing
+            let text_extensions = ["txt", "md", "rs", "py", "go", "js", "ts", "html", "css",
+                                   "json", "yaml", "yml", "toml", "xml", "sh", "c", "h", "cpp"];
+            // Collect files first, then process in parallel
+            let mut files = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if text_extensions.contains(&ext) {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                files.push((path.to_string_lossy().to_string(), content));
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!("ingest-par: {} files found, processing...", files.len());
+            use rayon::prelude::*;
+            let gguf_owned = gguf.to_string();
+            let results: Vec<usize> = files.par_iter()
+                .with_max_len(1)
+                .map(|(_path, content)| {
+                    let chunks = chunk_text(content, 512);
+                    if chunks.is_empty() { return 0usize; }
+                    let mut local_store = memory::MemoryStore::new(&store_path, 10000);
+                    let mut stored = 0usize;
+                    for chunk in &chunks {
+                        let emb = match embed_to_vec(&gguf_owned, chunk) {
+                            Some(e) => e,
+                            None => continue,
+                        };
+                        let tags = vec!["ingested".to_string(), "parallel".to_string()];
+                        let _id = local_store.add(chunk, &emb, tags);
+                        stored += 1;
+                    }
+                    stored
+                })
+                .collect();
+            let total: usize = results.iter().sum();
+            println!("ingest-par: {} chunks stored from {} files ({} workers)",
+                total, files.len(), max_workers);
+        }
+        _ => {
+            println!("kai memory subcommands:");
+            println!("  store <gguf> <text> [ -- tag1,tag2]  # embed + store");
+            println!("  search <gguf> <query> [k]           # search top-k");
+            println!("  list [n]                            # list recent n");
+            println!("  clear                               # delete all");
+            println!("  count                               # total count");
+            println!("  ingest <dir> <gguf>                 # crawl directory, chunk, embed & store");
+            println!("  web-ingest <url> <gguf>             # fetch URL, extract text, chunk, embed & store");
+            println!("  ingest-par <dir> <gguf> [workers]   # parallel ingest (rayon)");
+        }
+    }
+}
+
+/// Strip HTML tags from a string, returning plain text.
+fn strip_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut in_script = false;
+    let mut in_style = false;
+    let mut tag_buf = String::new();
+    for ch in html.chars() {
+        if ch == '<' {
+            in_tag = true;
+            tag_buf.clear();
+            continue;
+        }
+        if in_tag {
+            if ch == '>' {
+                in_tag = false;
+                let tag = tag_buf.to_lowercase();
+                if tag.starts_with("script") || tag.starts_with("/script") {
+                    in_script = tag.starts_with("script");
+                }
+                if tag.starts_with("style") || tag.starts_with("/style") {
+                    in_style = tag.starts_with("style");
+                }
+                continue;
+            }
+            tag_buf.push(ch);
+            continue;
+        }
+        if in_script || in_style { continue; }
+        // Normalize whitespace
+        if ch.is_whitespace() {
+            if out.ends_with(' ') { continue; }
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Fetch a URL and ingest its text content into the memory store.
+fn memory_web_ingest(url: &str, gguf: &str, store: &mut memory::MemoryStore) -> usize {
+    let response = match ureq::get(url)
+        .timeout(std::time::Duration::from_secs(30))
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("web-ingest: HTTP error for {url}: {e}");
+            return 0;
+        }
+    };
+
+    let content_type = response.header("content-type").unwrap_or("").to_string();
+    let body = match response.into_string() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("web-ingest: read error for {url}: {e}");
+            return 0;
+        }
+    };
+
+    let text = if content_type.contains("text/html") || body.trim().starts_with("<!") || body.trim().starts_with("<html") {
+        strip_html(&body)
+    } else {
+        body.trim().to_string()
+    };
+
+    if text.len() < 50 {
+        eprintln!("web-ingest: content too short from {url} ({chars} chars)", chars = text.len());
+        return 0;
+    }
+
+    let meta = match gguf::read_kv(gguf) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("web-ingest: GGUF meta error: {e}"); return 0; }
+    };
+    let cfg = match gguf::build_config(&meta) {
+        Some(c) => c,
+        None => { eprintln!("web-ingest: could not build config"); return 0; }
+    };
+    let tok = match tok::Tokenizer::from_gguf(&meta) {
+        Some(t) => t,
+        None => { eprintln!("web-ingest: no tokenizer"); return 0; }
+    };
+
+    let chunks = chunk_text(&text, 512);
+    if chunks.is_empty() {
+        eprintln!("web-ingest: no chunks from {url}");
+        return 0;
+    }
+
+    let (_v, map, _nt, _nk) = match gguf::load_tensors(gguf) {
+        Ok(x) => x,
+        Err(e) => { eprintln!("web-ingest: load error: {e}"); return 0; }
+    };
+    let w = match model::Weights::from_gguf(&map, &cfg) {
+        Ok(w) => w,
+        Err(e) => { eprintln!("web-ingest: model load error: {e}"); return 0; }
+    };
+
+    let mut stored = 0usize;
+    for chunk in &chunks {
+        let ids = tok.encode(chunk);
+        let emb = w.mean_pooled_hidden(&cfg, &ids);
+        let tags = vec!["ingested".to_string(), "web".to_string(), url.to_string()];
+        let _id = store.add(chunk, &emb, tags);
+        stored += 1;
+    }
+    stored
+}
+
 /// `kai physics`: Compute physics/geometric metrics via kai-mlir dialect.
 fn physics_cmd(action: &str, params: &str) {
     let mut registry = DialectRegistry::new();
@@ -1282,17 +1996,54 @@ fn physics_cmd(action: &str, params: &str) {
                 Err(e) => eprintln!("tau error: {e}"),
             }
         }
+        "tau-decay" => {
+            let vals: Vec<f32> = params.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if vals.is_empty() {
+                println!("Usage: kai physics tau-decay <tau> [idle_seconds] [decay_rate]");
+                return;
+            }
+            let tau = vals[0];
+            let idle = vals.get(1).copied().unwrap_or(60.0);
+            let rate = vals.get(2).copied().unwrap_or(vfe::TAU_DECAY_RATE);
+            let decayed = vfe::tau_decay(tau, idle, rate);
+            println!("Tau decay: {tau:.4} → {decayed:.4} (idle={idle}s, rate={rate})");
+        }
+        "tau-update" => {
+            let vals: Vec<f32> = params.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if vals.len() < 2 {
+                println!("Usage: kai physics tau-update <tau> <vfe> [learning_rate]");
+                return;
+            }
+            let tau = vals[0];
+            let vfe_val = vals[1];
+            let lr = vals.get(2).copied().unwrap_or(vfe::TAU_LEARNING_RATE);
+            let updated = vfe::tau_update(tau, vfe_val, lr);
+            println!("Tau update: {tau:.4} → {updated:.4} (VFE={vfe_val}, lr={lr})");
+        }
+        "subjective" => {
+            let vals: Vec<f32> = params.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if vals.len() < 2 || vals.len() % 2 != 0 {
+                println!("Usage: kai physics subjective <wall_dt> <tau> [wall_dt tau ...]");
+                return;
+            }
+            let history: Vec<(f32, f32)> = vals.chunks(2).map(|c| (c[0], c[1])).collect();
+            let subj = vfe::subjective_seconds(&history);
+            let wall_total: f32 = history.iter().map(|(w, _)| w).sum();
+            println!("Subjective time: {wall_total:.1}s wall → {subj:.1}s subjective (ratio={:.1}x)", subj / wall_total.max(0.001));
+        }
         _ => {
             println!("kai physics <action> [params]");
-            println!("  g_ij <scores...>     # compute g_ij = 1 - a_ij for attention scores");
-            println!("  vfe <p1> <a1> ...    # variational free energy (MSE)");
-            println!("  tau <τ> <v>          # time dilation: τ' = τ·√(1-v²)");
-            println!("Uses kai-mlir dialect for structured physics computation.");
+            println!("  g_ij <scores...>          # compute g_ij = 1 - a_ij for attention scores");
+            println!("  vfe <p1> <a1> ...         # variational free energy (MSE)");
+            println!("  tau <τ> <v>               # time dilation: τ' = τ·√(1-v²)");
+            println!("  tau-decay <τ> [idle_s] [rate]  # decay tau over idle time (Phase 7.1)");
+            println!("  tau-update <τ> <vfe> [lr]  # update tau from VFE (Phase 7.1)");
+            println!("  subjective <dt> <τ> ...    # compute subjective seconds from tau history");
         }
     }
 }
 
-fn fuse(path: &str, text: &str, iters: usize, lr: f32, seed_scale: f32, attr_path: &str) {
+fn fuse(path: &str, text: &str, iters: usize, lr: f32, seed_scale: f32, attr_path: &str, output_path: &str) {
     let vecs = match attractor::load(attr_path) {
         Ok(v) => v,
         Err(e) => {
@@ -1375,6 +2126,9 @@ fn fuse(path: &str, text: &str, iters: usize, lr: f32, seed_scale: f32, attr_pat
             vfe
         );
     }
+    // Save the fused model to GGUF
+    crate::gguf_write::save_gguf(&model, &cfg, &tok, output_path, &std::collections::HashMap::new());
+    println!("  fused model saved -> {output_path}");
 }
 
 /// Darwin Archive: Recursive self-improvement loop.
@@ -1430,6 +2184,7 @@ fn evaluate_physics_params(
         None,            // no engram
         Some(params),    // physics override
         Some(&mut metrics),
+        None,            // no attractor
     );
     let elapsed = start.elapsed().as_secs_f32();
     if elapsed > 0.0 {
@@ -1463,6 +2218,144 @@ fn parse_physics_params_from_patch(patch: &str) -> PhysicsParams {
         }
     } else {
         PhysicsParams::default()
+    }
+}
+
+/// `kai distributed`: Parallel evaluation harness.
+fn distributed_cmd(action: &str, params: &str) {
+    use distributed::{ParallelEval, SequentialEval};
+    match action {
+        "bench" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.is_empty() {
+                eprintln!("Usage: kai distributed bench <n> [workers]");
+                return;
+            }
+            let n: usize = parts[0].parse().unwrap_or(1000);
+            let workers: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+            // Sequential
+            let seq_tasks: Vec<_> = (0..n)
+                .map(|i| move || {
+                    let mut a = 0u64; let mut b = 1u64;
+                    for _ in 0..20 { let c = a.wrapping_add(b); a = b; b = c; }
+                    Some(i)
+                })
+                .collect();
+            let seq_start = std::time::Instant::now();
+            let seq_stats = SequentialEval::eval(seq_tasks);
+            let seq_ms = seq_start.elapsed().as_millis() as f64;
+
+            // Parallel (fresh tasks)
+            let par_tasks: Vec<_> = (0..n)
+                .map(|i| move || {
+                    let mut a = 0u64; let mut b = 1u64;
+                    for _ in 0..20 { let c = a.wrapping_add(b); a = b; b = c; }
+                    Some(i)
+                })
+                .collect();
+            // Parallel
+            let eval = if workers > 0 {
+                ParallelEval::with_workers(workers)
+            } else {
+                ParallelEval::new()
+            };
+            let par_start = std::time::Instant::now();
+            let par_stats = eval.eval(par_tasks);
+            let par_ms = par_start.elapsed().as_millis() as f64;
+            let speedup = if par_ms > 0.0 { seq_ms / par_ms } else { 0.0 };
+            println!("Distributed benchmark: n={} tasks", n);
+            println!("  Sequential:   {} tasks, {:.1}ms, {:.0} tasks/s", n, seq_ms, seq_stats.throughput());
+            println!("  Parallel ({} workers): {} tasks, {:.1}ms, {:.0} tasks/s",
+                par_stats.workers, par_stats.completed, par_ms, par_stats.throughput());
+            println!("  Speedup: {:.1}x", speedup);
+            println!("  Efficiency: {:.0}%", par_stats.efficiency() * 100.0);
+        },
+        "status" => {
+            let eval = ParallelEval::new();
+            println!("Distributed evaluation harness:");
+            println!("  Workers: {}", eval.workers());
+            println!("  Available cores: {}", std::thread::available_parallelism()
+                .map(|n| n.get()).unwrap_or(0));
+            println!("  Backend: rayon thread pool");
+        },
+        "attractor" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            let n: usize = parts.first().and_then(|s| s.parse().ok()).unwrap_or(10);
+            let attractor_path = parts.get(1).copied().unwrap_or(attractor::DEFAULT_ATTRACTOR_PATH);
+            let dim: usize = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+
+            eprintln!("Distributed attractor benchmark: {n} agents, dim={dim}, path={attractor_path}");
+
+            // Create initial attractor if it doesn't exist
+            if !std::path::Path::new(attractor_path).exists() {
+                let seed = vec![0.5f32; dim];
+                attractor::push(attractor_path, &seed).unwrap_or_else(|e| {
+                    eprintln!("attractor init: {e}");
+                });
+            }
+
+            // Spawn parallel agents that each push to the attractor
+            // Each agent computes a slightly different vector, simulating divergence
+            let tasks: Vec<_> = (0..n)
+                .map(|i| {
+                    let ap = attractor_path.to_string();
+                    move || {
+                        // Load current attractor
+                        let vecs = attractor::load(&ap).ok();
+                        let cent = vecs.as_ref().map(|v| attractor::centroid(v)).unwrap_or_default();
+
+                        // Compute a slightly different vector
+                        let mut v: Vec<f32> = if cent.len() == dim {
+                            cent.iter().map(|&x| x + (i as f32 * 0.01 - 0.05)).collect()
+                        } else {
+                            (0..dim).map(|j| 0.5 + (i * j) as f32 * 0.001).collect()
+                        };
+                        // Normalize
+                        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        if norm > 1e-8 { for x in &mut v { *x /= norm; } }
+
+                        match attractor::push(&ap, &v) {
+                            Ok(()) => Some(v),
+                            Err(_) => None,
+                        }
+                    }
+                })
+                .collect();
+
+            let eval = ParallelEval::new();
+            let start = std::time::Instant::now();
+            let stats = eval.eval(tasks);
+            let elapsed = start.elapsed();
+
+            // Report convergence
+            match attractor::convergence(attractor_path, n) {
+                Ok((conv, cnt)) => {
+                    println!();
+                    println!("Distributed attractor convergence:");
+                    println!("  Agents:     {n}");
+                    println!("  Completed:  {}", stats.completed);
+                    println!("  Failed:     {}", stats.failed);
+                    println!("  Time:       {:.1}ms", elapsed.as_millis() as f64);
+                    println!("  Convergence: {:.4}", conv);
+                    println!("  Vectors:    {cnt}");
+                    if conv > 0.95 {
+                        println!("  Status: ✅ CONVERGED (agents agree on shared attractor)");
+                    } else if conv > 0.7 {
+                        println!("  Status: ⚠️  PARTIALLY CONVERGED");
+                    } else {
+                        println!("  Status: ❌ DIVERGENT (agents disagree)");
+                    }
+                }
+                Err(e) => eprintln!("convergence check failed: {e}"),
+            }
+        },
+        _ => {
+            println!("Distributed computation commands:");
+            println!("  kai distributed bench <n> [workers]  -- benchmark parallel vs sequential");
+            println!("  kai distributed status               -- show worker info");
+            println!("  kai distributed attractor [n] [path] [dim]  -- parallel attractor convergence test");
+        }
     }
 }
 
@@ -1703,6 +2596,58 @@ fn darwin_cmd(action: &str, params: &str) {
             let n = generate_source_candidates(&mut archive);
             println!("Seeded {n} candidates from source analysis");
         },
+        "self-play" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            let initial_source = if parts.is_empty() {
+                // Default: read source files
+                let src_dirs = ["src", "rust/kai-fusion/src"];
+                let mut content = String::new();
+                for dir in &src_dirs {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().map(|e| e == "rs").unwrap_or(false) {
+                                if let Ok(c) = std::fs::read_to_string(&path) {
+                                    content.push_str(&c);
+                                    content.push('\n');
+                                }
+                            }
+                        }
+                    }
+                }
+                content
+            } else {
+                parts.join(" ")
+            };
+            let config = darwin::self_play::SelfPlayConfig {
+                population_size: 10,
+                max_generations: 20,
+                mutation_rate: 0.15,
+                crossover_rate: 0.3,
+                fitness_threshold: 0.8,
+                elite_count: 3,
+                temperature: 1.0,
+            };
+            let mut trainer = darwin::self_play::SelfPlayTrainer::new(
+                ".axiom_state/darwin_archive.json", config,
+            );
+            println!("Self-play training: pop={}, gens={}, starting...",
+                config.population_size, config.max_generations);
+            let result = trainer.run(&initial_source);
+            println!("Self-play complete:");
+            println!("  best_fitness: {:.4}", result.best_fitness);
+            println!("  best_generation: {}", result.best_generation);
+            println!("  convergence: gen {}", result.convergence_generations);
+            println!("  final_population: {}", result.final_population_size);
+            if !result.best_patch.is_empty() {
+                let preview = if result.best_patch.len() > 200 {
+                    format!("{}...", &result.best_patch[..197])
+                } else {
+                    result.best_patch.clone()
+                };
+                println!("  best_patch ({} bytes): {}", result.best_patch.len(), preview);
+            }
+        },
         _ => {
             println!("Darwin Archive commands:");
             println!("  kai darwin init                  # Create/initialize archive");
@@ -1710,10 +2655,10 @@ fn darwin_cmd(action: &str, params: &str) {
             println!("  kai darwin list                  # List candidates");
             println!("  kai darwin seed                  # Seed candidates from source");
             println!("  kai darwin evolve                # Generate, evaluate, and evolve");
+            println!("  kai darwin self-play             # Run self-play training loop (source-code evolution)");
         }
     }
 }
-
 fn generate_source_candidates(archive: &mut darwin::DarwinArchive) -> usize {
     let src_dirs = ["src", "rust/kai-fusion/src"];
     let mut files: Vec<String> = Vec::new();
@@ -2025,7 +2970,7 @@ fn train(path: &str, text: &str, iters: usize, lr: f32) {
             }
 
             // Backward
-            let grads = model.backward(&cfg, &cache, &d_logits, &ctx);
+            let grads = model.backward(&cfg, &cache, &d_logits, &ctx, &FreezeConfig::default());
 
             // Apply gradients
             model.apply_gradients(&grads, lr);
@@ -2059,9 +3004,11 @@ fn train(path: &str, text: &str, iters: usize, lr: f32) {
     // Save (preserve original quantization types)
     if cfg.vocab_size <= 65536 && cfg.dim <= 8192 {
         let mut tensor_types = HashMap::new();
-        if let Ok((_ver, info, _data_start)) = gguf::parse(path) {
-            for t in &info {
-                tensor_types.insert(t.name.clone(), t.ggml_type);
+        if let Ok(data) = std::fs::read(path) {
+            if let Ok((_ver, info, _data_start)) = gguf::parse(&data) {
+                for t in &info {
+                    tensor_types.insert(t.name.clone(), t.ggml_type);
+                }
             }
         }
         save_gguf(&model, &cfg, &tok, &output_path, &tensor_types);
@@ -2117,33 +3064,227 @@ fn main() {
         let vocab: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(20);
         gen::gen(path, dim, layers, vocab, &[]);
         println!("wrote synthetic llama-format GGUF -> {path}");
+    } else if args.len() >= 5 && args[1] == "transplant" {
+        let source = &args[2];
+        let template = &args[3];
+        let mut output = "transplanted.gguf".to_string();
+        let mut embed_map: Option<String> = None;
+        let mut target_arch = "dense".to_string();
+        let mut i = 4;
+        while i < args.len() {
+            if args[i] == "-o" && i + 1 < args.len() {
+                output = args[i + 1].clone();
+                i += 2;
+                continue;
+            }
+            if args[i] == "--embed-map" && i + 1 < args.len() {
+                embed_map = Some(args[i + 1].clone());
+                i += 2;
+                continue;
+            }
+            if args[i] == "--target-arch" && i + 1 < args.len() {
+                target_arch = args[i + 1].clone();
+                i += 2;
+                continue;
+            }
+            i += 1;
+        }
+        match crate::transplant::transplant(source, template, &output, embed_map.as_deref(), &target_arch) {
+            Ok(()) => println!("transplant complete -> {output}"),
+            Err(e) => eprintln!("transplant failed: {e}"),
+        }
     } else if args.len() >= 4 && args[1] == "embed" {
         let path = &args[2];
         let text = args[3..].join(" ");
-        bert::run(path, &text);
+        let use_model = args.iter().any(|a| a == "--use-model");
+        if use_model {
+            crate::model::Weights::embed_with_model(path, &text);
+        } else {
+            bert::run(path, &text);
+        }
+    } else if args.len() >= 3 && args[1] == "memory" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        memory_cmd(action, &params);
     } else if args.len() >= 4 && args[1] == "run" {
         let path = &args[2];
         let mut temperature = 1.0;
         let mut top_p = 0.9;
-        let mut prompt_start = 3;
-        for i in 2..args.len() {
-            if args[i] == "--temp" {
-                temperature = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(1.0);
-                prompt_start = prompt_start.max(i + 2);
+        let mut image_path: Option<String> = None;
+        let mut vision_gguf: Option<String> = None;
+        let mut attractor_path: Option<String> = None;
+        let prompt_start = 3;
+        // First pass: extract flags/values by building a set of positions to skip
+        let mut skip_positions: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut i = 2;
+        while i < args.len() {
+            if args[i] == "--temp" && i + 1 < args.len() {
+                temperature = args[i + 1].parse().unwrap_or(1.0);
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
             }
-            if args[i] == "--top_p" {
-                top_p = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0.9);
-                prompt_start = prompt_start.max(i + 2);
+            if args[i] == "--top_p" && i + 1 < args.len() {
+                top_p = args[i + 1].parse().unwrap_or(0.9);
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
+            }
+            if args[i] == "--image" && i + 1 < args.len() {
+                image_path = Some(args[i + 1].clone());
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
+            }
+            if args[i] == "--vision-gguf" && i + 1 < args.len() {
+                vision_gguf = Some(args[i + 1].clone());
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
+            }
+            if args[i] == "--attractor" && i + 1 < args.len() {
+                attractor_path = Some(args[i + 1].clone());
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
+            }
+            if args[i] == "--agent" && i + 1 < args.len() {
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
+            }
+            if args[i] == "--max-new" && i + 1 < args.len() {
+                // Use different parser: stores in a local to be used later
+                skip_positions.insert(i);
+                skip_positions.insert(i + 1);
+                i += 2;
+                continue;
+            }
+            i += 1;
+        }
+        // Extract --max-new separately
+        let mut max_new: usize = 48;
+        {
+            let mut j = 2;
+            while j < args.len() {
+                if args[j] == "--max-new" && j + 1 < args.len() {
+                    max_new = args[j + 1].parse().unwrap_or(48);
+                    // Don't need to modify skip_positions again, already handled above
+                }
+                j += 1;
             }
         }
-        let text = args[prompt_start..].join(" ");
-        generate_from_gguf(path, &text, 48, temperature, top_p);
+        // Build text from all non-skipped positional args starting at index 3
+        let text_parts: Vec<&str> = args[prompt_start..].iter()
+            .enumerate()
+            .filter(|(idx, _)| !skip_positions.contains(&(prompt_start + idx)))
+            .map(|(_, s)| s.as_str())
+            .collect();
+        let text = text_parts.join(" ");
+
+        // ---- Auto-classify query and prepend system prompt ----
+        let route = routes::RouteConfig::from_query(&text);
+        let mut adjusted_temp = temperature;
+        let mut adjusted_topp = top_p;
+        // Check if --agent was explicitly provided
+        let agent_override: Option<&str> = {
+            let mut found = None;
+            let mut j = 2;
+            while j < args.len() {
+                if args[j] == "--agent" && j + 1 < args.len() {
+                    found = Some(args[j + 1].as_str());
+                }
+                j += 1;
+            }
+            found
+        };
+        let route = if let Some(agent_str) = agent_override {
+            let kind = match agent_str.to_lowercase().as_str() {
+                "code" => routes::AgentKind::Code,
+                "math" | "science" => routes::AgentKind::MathScience,
+                "creative" | "art" => routes::AgentKind::Creative,
+                "analysis" | "research" => routes::AgentKind::Analysis,
+                _ => routes::AgentKind::General,
+            };
+            routes::RouteConfig::from_kind(kind)
+        } else {
+            route
+        };
+        // Use route temperature if user didn't specify
+        if temperature == 1.0 && route.temperature.is_some() {
+            adjusted_temp = route.temperature.unwrap();
+        }
+        if top_p == 0.9 && route.top_p.is_some() {
+            adjusted_topp = route.top_p.unwrap();
+        }
+        // Prepend system prompt
+        let augmented_prompt = format!(
+            "[System: {}]\n\nUser: {}",
+            route.system_prompt,
+            text
+        );
+        eprintln!("[route] {} {} — {}", route.kind.icon(), route.kind.label(), text);
+
+        if let Some(img_path) = image_path {
+            let vgguf = vision_gguf.unwrap_or_else(|| {
+                let p = std::path::Path::new(path);
+                let dir = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
+                dir.join(format!("{}_vision.gguf", stem))
+                    .to_str()
+                    .unwrap_or("vision.gguf")
+                    .to_string()
+            });
+            generate_with_vision(path, &vgguf, &img_path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp);
+        } else {
+            let use_rag = args.iter().any(|a| a == "--rag");
+            if use_rag {
+                generate_with_rag(path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp);
+            } else {
+                generate_from_gguf_attractor(path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp, attractor_path.as_deref());
+            }
+        }
     } else if args.len() >= 4 && args[1] == "assimilate" {
         let path = &args[2];
         let text = args[3..].join(" ");
         let iters: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(15);
         let lr: f32 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0.05);
         assimilate(path, &text, iters, lr);
+    } else if args.len() >= 6 && args[1] == "assimilate-multi" {
+        let student = args[2].clone();
+        let output = args[3].clone();
+        let text = args[4].clone();
+        let iters: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(5);
+        let lr: f32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(0.001);
+        let temp: f32 = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+        let teacher_paths: Vec<String> = args[8..].to_vec();
+        if teacher_paths.is_empty() {
+            eprintln!("error: need at least one teacher GGUF path");
+            return;
+        }
+        eprintln!("assimilate-multi: student={student}, output={output}, teachers={}, text=\"{text}\"",
+            teacher_paths.len());
+        let ass_cfg = assimilate::AssimilationConfig {
+            student_path: &student,
+            teacher_paths: &teacher_paths,
+            output_path: &output,
+            text: &text,
+            iters,
+            lr,
+            distillation_temp: temp,
+            teacher_weights: None,
+        };
+        match assimilate::assimilate_multi(&ass_cfg) {
+            Ok(r) => eprintln!("assimilate-multi done: {} iters, final_loss={:.4}, saved to {output}",
+                r.iterations, r.final_loss),
+            Err(e) => eprintln!("assimilate-multi failed: {e}"),
+        }
     } else if args.len() >= 4 && args[1] == "fuse" {
         let path = &args[2];
         let text = args[3..].join(" ");
@@ -2154,7 +3295,8 @@ fn main() {
             .get(7)
             .cloned()
             .unwrap_or_else(|| ".axiom_state/kai_fusion_attractor.json".to_string());
-        fuse(path, &text, iters, lr, seed_scale, &attr);
+        let output = args.get(8).cloned().unwrap_or_else(|| "fused.gguf".to_string());
+        fuse(path, &text, iters, lr, seed_scale, &attr, &output);
     } else if args.len() >= 3 && args[1] == "curvature" {
         let path = &args[2];
         let text = args[3..].join(" ");
@@ -2167,6 +3309,10 @@ fn main() {
         let action = &args[2];
         let params = args[3..].join(" ");
         darwin_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "distributed" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        distributed_cmd(action, &params);
     } else if args.len() >= 3 && args[1] == "body" {
         let action = &args[2];
         let params = args[3..].join(" ");
@@ -2194,7 +3340,6 @@ fn main() {
         let teacher_path: Option<&str> = args.get(7).filter(|s| !s.is_empty()).map(|s| s.as_str());
         let out = path.replace(".gguf", "_trained.gguf");
 
-        // Compute chunks: single chunk covering full sequence (geodesic chunking via separate command)
         let meta = match gguf::read_kv(path) {
             Ok(m) => m,
             Err(e) => { eprintln!("meta: {e}"); return; }
@@ -2220,17 +3365,53 @@ fn main() {
         let threshold: f32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.5);
         let min_chunk: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(3);
         geodesic(path, text, threshold, min_chunk);
+    } else if args.len() >= 3 && args[1] == "goal" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        goal_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "value" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        values_cmd(action, &params);
+    } else if args.len() >= 2 && args[1] == "selfmod" {
+        let action = if args.len() >= 3 { &args[2] } else { "status" };
+        let params = args[3..].join(" ");
+        selfmod_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "vision" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        vision_cmd(action, &params);
+    } else if args.len() >= 2 && args[1] == "attractor" {
+        let action = if args.len() >= 3 { &args[2] } else { "status" };
+        let params = args[3..].join(" ");
+        attractor_cmd(action, &params);
+    } else if args.len() >= 2 && args[1] == "install-service" {
+        install_service_cmd();
+    } else if args.len() >= 2 && args[1] == "route" {
+        let query = args[2..].join(" ");
+        let route = routes::RouteConfig::from_query(&query);
+        println!("{} [{}] — {}", route.kind.icon(), route.kind.label(), route.system_prompt);
+        if route.temperature.is_some() || route.top_p.is_some() {
+            println!("  overrides: temp={:?} top_p={:?}", route.temperature, route.top_p);
+        }
+    } else if args.len() >= 3 && args[1] == "daemon" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        daemon_cmd(action, &params);
     } else {
         println!("Kai-Fusion");
         println!("  kai launch opencode [gguf]   # REPL (tiny demo, or real GGUF decoder)");
+        println!("  kai transplant <source> <template> [-o <out>] [--embed-map <f>] [--target-arch dense|moe|mla|moe+mla]  # slice & transplant weights");
         println!("  kai inspect <gguf>    # inventory real local model weights");
         println!("  kai load <gguf>       # load tensors + infer dense backbone config");
         println!("  kai dump <gguf>       # print every tensor name + shape");
         println!("  kai meta <gguf>       # print architecture metadata + inferred Config");
         println!("  kai gen <path> [d l v]# write synthetic llama-format test GGUF");
         println!("  kai embed <gguf> <text>  # run real Nomic-BERT encoder on its weights");
-        println!("  kai run <gguf> <text> [--temp <t>] [--top_p <p>]  # generation with physics-wired adaptive inference");
+        println!("  kai embed <gguf> <text> --use-model  # use model's own mean-pooled hidden state");
+        println!("  kai run <gguf> <text> [--temp <t>] [--top_p <p>] [--rag] [--image <path>] [--vision-gguf <path>] [--attractor <path>]  # generation with physics-wired adaptive inference + RAG + multi-modal vision + attractor coordination");
         println!("  kai assimilate <gguf> \"<text>\" [iters] [lr]  # Kai VFE assimilation");
+        println!("  kai assimilate-multi <student> <output> \"<text>\" [iters] [lr] [temp] <teacher1> <teacher2> ...  # multi-teacher distillation");
         println!("  kai fuse <gguf> \"<text>\" [iters] [lr] [seed] [attractor.json]  # assimilate seeded by the 10-arch attractor");
         println!("  kai train <gguf> \"<text>\" [iters] [lr]  # full backward pass training (Phase 2)");
         println!("  kai chunked-train <gguf> <text> [iters] [lr] [distill_lambda] [teacher_path]  # chunked training with optional distillation");
@@ -2238,6 +3419,31 @@ fn main() {
         println!("  kai darwin <archive_path> [threshold] [max_pop]  # Darwin Archive self-improvement");
         println!("  kai engram list|info|clear|delete  # semantic memory operations");
         println!("  kai physics g_ij|vfe|tau [params]  # kai-mlir physics dialect ops");
+        println!("  kai memory store|search|list|clear|count|ingest [args]  # vector memory operations");
+        println!("  kai goal decompose <goal>        # break goal into subtasks");
+        println!("  kai goal decompose-deep <goal>    # full 3-level decomposition");
+        println!("  kai goal flatten <goal>           # flatten plan into execution queue");
+        println!("  kai goal plan <goal>              # show plan summary");
+        println!("  kai value process <message>       # detect value signals from user message");
+        println!("  kai value dominant <message>      # show dominant preference");
+        println!("  kai value rank <message>           # show all ranked preferences");
+        println!("  kai value weight <dim> [message]   # show weight for a dimension");
+        println!("  kai selfmod status                  # show self-modification tracker status");
+        println!("  kai selfmod event <desc> [fit_before] [fit_after] [target]  # record modification event");
+        println!("  kai selfmod history                 # show recent self-mod events");
+        println!("  kai selfmod kill                    # activate kill switch");
+        println!("  kai selfmod level                   # show current escalation level");
+        println!("  kai distributed bench <n> [workers]  # benchmark parallel vs sequential eval with n tasks");
+        println!("  kai distributed status               # show worker info and stats");
+        println!("  kai distributed attractor [n] [path] [dim]  # parallel attractor convergence test");
+        println!("  kai vision encode <image> [vision_gguf]  # encode image with vision tower");
+        println!("  kai vision info <vision_gguf>        # inspect vision tower metadata");
+        println!("  kai attractor status [path]          # show attractor convergence and stats");
+        println!("  kai attractor converge [path]        # check convergence score");
+        println!("  kai install-service                  # install Kai as systemd user service (24/7)");
+        println!("  kai route <query>                    # classify query and show sub-agent routing");
+        println!("  kai daemon start <gguf> [--attractor <path>]  # start 24/7 fixed-point daemon");
+        println!("  kai daemon help                        # daemon options");
     }
 }
 
@@ -2307,5 +3513,515 @@ fn launch_real(path: &str) {
             }
         }
         println!("{}", tok.decode(&ids));
+    }
+}
+
+/// `kai value`: Value learning operations.
+fn values_cmd(action: &str, params: &str) {
+    use values::{ValueLearner, ValueDimension};
+    match action {
+        "process" => {
+            let mut learner = ValueLearner::new();
+            let signals = learner.process_message(params);
+            if signals.is_empty() {
+                println!("No value signals detected.");
+            } else {
+                println!("Detected {} value signals:", signals.len());
+                for s in &signals {
+                    println!("  {} polarity={:+.1} trigger=\"{}\"", s.dimension.label(), s.polarity, s.trigger);
+                }
+                println!("  Summary: {}", learner.summary());
+            }
+        }
+        "dominant" => {
+            let mut learner = ValueLearner::new();
+            learner.process_message(params);
+            let dom = learner.dominant_preference();
+            println!("Dominant preference: {} ({:.3})", dom.dimension.label(), dom.weight);
+        }
+        "rank" => {
+            let mut learner = ValueLearner::new();
+            learner.process_message(params);
+            println!("Ranked preferences:");
+            for w in learner.ranked_preferences() {
+                println!("  {}: {:.3}", w.dimension.label(), w.weight);
+            }
+        }
+        "weight" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.is_empty() {
+                println!("Usage: kai value weight <dimension>");
+                println!("Dimensions: factuality|speed|creativity|thoroughness|conciseness|code_examples|explanations");
+                return;
+            }
+            let dim = match parts[0] {
+                "factuality" => ValueDimension::Factuality,
+                "speed" => ValueDimension::Speed,
+                "creativity" => ValueDimension::Creativity,
+                "thoroughness" => ValueDimension::Thoroughness,
+                "conciseness" => ValueDimension::Conciseness,
+                "code_examples" => ValueDimension::CodeExamples,
+                "explanations" => ValueDimension::Explanations,
+                _ => {
+                    println!("Unknown dimension: {}", parts[0]);
+                    return;
+                }
+            };
+            let mut learner = ValueLearner::new();
+            let remaining = parts[1..].join(" ");
+            if !remaining.is_empty() {
+                learner.process_message(&remaining);
+            }
+            println!("Weight for {}: {:.3}", dim.label(), learner.weight(dim));
+        }
+        _ => {
+            println!("Value learning commands:");
+            println!("  kai value process <message>     -- detect value signals from user message");
+            println!("  kai value dominant <message>    -- show dominant preference");
+            println!("  kai value rank <message>        -- show all ranked preferences");
+            println!("  kai value weight <dim> [message] -- show weight for a specific dimension");
+        }
+    }
+}
+
+/// `kai selfmod`: Self-modification tracker operations.
+fn selfmod_cmd(action: &str, params: &str) {
+    use selfmod::{SelfModTracker, ModEvent};
+    match action {
+        "status" => {
+            let dir = ".axiom_state";
+            let _ = std::fs::create_dir_all(dir);
+            let path = format!("{dir}/selfmod_state.json");
+            let tracker = if let Ok(json) = std::fs::read_to_string(&path) {
+                serde_json::from_str::<SelfModTracker>(&json).unwrap_or_default()
+            } else {
+                SelfModTracker::new()
+            };
+            println!("{}", tracker.summary());
+        },
+        "event" => {
+            // kai selfmod event <description> [fitness_before] [fitness_after] [target]
+            let parts: Vec<&str> = params.splitn(4, ' ').collect();
+            if parts.is_empty() {
+                eprintln!("Usage: kai selfmod event <description> [fitness_before] [fitness_after] [target]");
+                return;
+            }
+            let desc = parts[0];
+            let fit_before: f32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            let fit_after: f32 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            let target = parts.get(3).unwrap_or(&"unknown").to_string();
+            let dir = ".axiom_state";
+            let _ = std::fs::create_dir_all(dir);
+            let path = format!("{dir}/selfmod_state.json");
+            let mut tracker = if let Ok(json) = std::fs::read_to_string(&path) {
+                serde_json::from_str::<SelfModTracker>(&json).unwrap_or_default()
+            } else {
+                SelfModTracker::new()
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let event = ModEvent {
+                level: tracker.current_level(),
+                target,
+                description: desc.to_string(),
+                hash_before: selfmod::simple_hash("before"),
+                hash_after: selfmod::simple_hash("after"),
+                fitness_before: fit_before,
+                fitness_after: fit_after,
+                timestamp: now,
+                human_approved: true,
+            };
+            tracker.record_event(event);
+            if let Ok(json) = serde_json::to_string_pretty(&tracker) {
+                let _ = std::fs::write(&path, &json);
+            }
+            println!("Recorded self-mod event: fitness {fit_before} -> {fit_after} ({})",
+                if fit_after > fit_before { "improved" } else { "regressed" });
+            if tracker.divergence_detected() {
+                eprintln!("⚠️  DIVERGENCE DETECTED! Consider rollback or kill switch.");
+            }
+            println!("{}", tracker.summary());
+        },
+        "history" => {
+            let path = ".axiom_state/selfmod_state.json";
+            let tracker = if let Ok(json) = std::fs::read_to_string(path) {
+                serde_json::from_str::<SelfModTracker>(&json).unwrap_or_default()
+            } else {
+                SelfModTracker::new()
+            };
+            let events = tracker.events();
+            if events.is_empty() {
+                println!("No self-modification events recorded.");
+                return;
+            }
+            println!("Self-modification history ({} events, {}):", events.len(), tracker.summary());
+            for (i, e) in events.iter().rev().enumerate().take(20) {
+                println!("  #{:<3} [{}] {} → {:.2}→{:.2} target={} desc=\"{}\"",
+                    i + 1, e.level.label(), e.timestamp, e.fitness_before, e.fitness_after,
+                    e.target, if e.description.len() > 40 {
+                        format!("{}...", &e.description[..37])
+                    } else { e.description.clone() });
+            }
+        },
+        "kill" => {
+            let dir = ".axiom_state";
+            let _ = std::fs::create_dir_all(dir);
+            let path = format!("{dir}/selfmod_state.json");
+            let mut tracker = if let Ok(json) = std::fs::read_to_string(&path) {
+                serde_json::from_str::<SelfModTracker>(&json).unwrap_or_default()
+            } else {
+                SelfModTracker::new()
+            };
+            tracker.activate_kill_switch();
+            if let Ok(json) = serde_json::to_string_pretty(&tracker) {
+                let _ = std::fs::write(&path, &json);
+            }
+            println!("🔒 Kill switch activated. Self-modification permanently disabled.");
+        },
+        "level" => {
+            let path = ".axiom_state/selfmod_state.json";
+            let tracker = if let Ok(json) = std::fs::read_to_string(path) {
+                serde_json::from_str::<SelfModTracker>(&json).unwrap_or_default()
+            } else {
+                SelfModTracker::new()
+            };
+            println!("Current self-modification level: {} ({})",
+                tracker.current_level().label(), tracker.current_level().numeric());
+            println!("Allowed levels: L0:human, L1:agent-code (requires approval)");
+        },
+        _ => {
+            println!("Self-modification commands:");
+            println!("  kai selfmod status                  -- show tracker status");
+            println!("  kai selfmod event <desc> [f_before] [f_after] [target]  -- record an event");
+            println!("  kai selfmod history                 -- show recent events");
+            println!("  kai selfmod kill                    -- activate kill switch");
+            println!("  kai selfmod level                   -- show current level");
+        }
+    }
+}
+
+/// `kai goal`: Goal decomposition operations.
+fn goal_cmd(action: &str, params: &str) {
+    use goals::{GoalDecomposer, SubtaskStatus};
+    match action {
+        "decompose" => {
+            let decomposer = GoalDecomposer::new();
+            let plan = decomposer.decompose(params);
+            println!("Goal: {}", plan.goal);
+            println!("  Subtasks: {}", plan.subtasks.len());
+            println!("  Progress: {}", plan.summary());
+            for s in &plan.subtasks {
+                print_subtask(s, 1);
+            }
+        }
+        "decompose-deep" => {
+            let decomposer = GoalDecomposer::with_max_depth(3);
+            let plan = decomposer.decompose(params);
+            println!("Goal: {}", plan.goal);
+            println!("  Subtasks: {}", plan.subtasks.len());
+            println!("  Progress: {}", plan.summary());
+            for s in &plan.subtasks {
+                print_subtask(s, 1);
+            }
+        }
+        "flatten" => {
+            let decomposer = GoalDecomposer::new();
+            let plan = decomposer.decompose(params);
+            let flat = goals::flatten_plan(&plan);
+            println!("Goal: {}", plan.goal);
+            println!("  Flattened queue ({} items):", flat.len());
+            for (i, s) in flat.iter().enumerate() {
+                let status_str = match &s.status {
+                    SubtaskStatus::Pending => "pending",
+                    SubtaskStatus::InProgress => "in-progress",
+                    SubtaskStatus::Completed => "completed",
+                    SubtaskStatus::Failed { .. } => "failed",
+                    SubtaskStatus::Skipped { .. } => "skipped",
+                };
+                println!("    {i}. [{status_str}] {} — {}", s.label, s.description);
+            }
+        }
+        "plan" => {
+            let decomposer = GoalDecomposer::new();
+            let plan = decomposer.decompose(params);
+            println!("GoalPlan({})", plan.goal);
+            println!("  status: {}", plan.summary());
+        }
+        _ => {
+            println!("Goal decomposition commands:");
+            println!("  kai goal decompose <goal>        — break goal into subtasks");
+            println!("  kai goal decompose-deep <goal>    — full 3-level decomposition");
+            println!("  kai goal flatten <goal>           — flatten plan into execution queue");
+            println!("  kai goal plan <goal>              — show plan summary");
+        }
+    }
+}
+
+fn vision_cmd(action: &str, params: &str) {
+    match action {
+        "encode" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.is_empty() {
+                eprintln!("usage: kai vision encode <image_path> [vision_gguf]");
+                return;
+            }
+            let image_path = parts[0];
+            let vision_gguf = parts.get(1).copied();
+
+            // Load or create random vision tower
+            let (weights, cfg) = if let Some(gguf_path) = vision_gguf {
+                match vision::load_vision_gguf(gguf_path) {
+                    Ok(wc) => wc,
+                    Err(e) => {
+                        eprintln!("failed to load vision GGUF: {e}");
+                        return;
+                    }
+                }
+            } else {
+                // Use random tiny weights for testing
+                let cfg = VisionConfig {
+                    enabled: true,
+                    tower: VisionTowerKind::SigLIP,
+                    image_size: 224,
+                    patch_size: 16,
+                    vision_dim: 64,
+                    n_vision_layers: 2,
+                    n_vision_heads: 4,
+                    vision_intermediate: 128,
+                    proj_dim: 64,
+                };
+                let weights = vision::VisionTowerWeights::random(&cfg);
+                (weights, cfg)
+            };
+
+            // Load image
+            let pixels = match vision::load_image(image_path, cfg.image_size) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("failed to load image: {e}");
+                    return;
+                }
+            };
+
+            eprintln!(
+                "[vision] encoding image: {} -> [{}, {}, {}]",
+                image_path,
+                pixels.shape()[0],
+                pixels.shape()[1],
+                pixels.shape()[2]
+            );
+
+            let embeddings = weights.encode(&pixels, &cfg);
+            let n_patches = embeddings.shape()[0];
+            let proj_dim = embeddings.shape()[1];
+
+            println!(
+                "Image encoded: {} patches x {} dim = {} tokens projected into text space",
+                n_patches,
+                proj_dim,
+                n_patches
+            );
+            // Show first few values
+            let flat: Vec<f32> = embeddings.iter().copied().collect();
+            if !flat.is_empty() {
+                let mean = flat.iter().sum::<f32>() / flat.len() as f32;
+                let max_abs = flat.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                println!("  mean={mean:.6}, max_abs={max_abs:.6}");
+                println!("  first patch: {:?}", &flat[..proj_dim.min(8)]);
+            }
+        }
+        "info" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.is_empty() {
+                eprintln!("usage: kai vision info <vision_gguf>");
+                return;
+            }
+            let gguf_path = parts[0];
+            match vision::load_vision_gguf(gguf_path) {
+                Ok((_weights, cfg)) => {
+                    println!("Vision tower info:");
+                    println!("  tower:      {:?}", cfg.tower);
+                    println!("  image_size: {}", cfg.image_size);
+                    println!("  patch_size: {}", cfg.patch_size);
+                    println!("  vision_dim: {}", cfg.vision_dim);
+                    println!("  layers:     {}", cfg.n_vision_layers);
+                    println!("  heads:      {}", cfg.n_vision_heads);
+                    println!("  inter:      {}", cfg.vision_intermediate);
+                    println!("  proj_dim:   {}", cfg.proj_dim);
+                }
+                Err(e) => eprintln!("failed to load vision GGUF: {e}"),
+            }
+        }
+        _ => {
+            println!("Vision commands:");
+            println!("  kai vision encode <image> [vision_gguf]  — encode image with vision tower");
+            println!("  kai vision info <vision_gguf>        — inspect vision tower metadata");
+        }
+    }
+}
+
+/// `kai attractor` — multi-agent fixed-point coordination via shared attractor file.
+fn attractor_cmd(action: &str, params: &str) {
+    let default_path = attractor::DEFAULT_ATTRACTOR_PATH;
+    match action {
+        "status" => {
+            let path = if params.is_empty() { default_path } else { params.trim() };
+            if !std::path::Path::new(path).exists() {
+                println!("Attractor: no file at {path}");
+                return;
+            }
+            match attractor::load(path) {
+                Ok(vecs) => {
+                    let cent = attractor::centroid(&vecs);
+                    let (conv, n) = attractor::convergence(path, 10).unwrap_or((0.0, 0));
+                    println!("Attractor: {path}");
+                    println!("  vectors:    {}", vecs.len());
+                    println!("  dim:        {}", if !cent.is_empty() { cent.len() } else { 0 });
+                    println!("  convergence (last 10): {conv:.4}");
+                    println!("  total pushes: {n}");
+                    if vecs.len() >= 2 {
+                        let last = &vecs[vecs.len() - 1];
+                        println!("  last vector: [{:.4}, {:.4}, {:.4}, ...]",
+                            last.first().copied().unwrap_or(0.0),
+                            last.get(1).copied().unwrap_or(0.0),
+                            last.get(2).copied().unwrap_or(0.0));
+                    }
+                }
+                Err(e) => eprintln!("attractor load failed: {e}"),
+            }
+        }
+        "converge" => {
+            let path = if params.is_empty() { default_path } else { params.trim() };
+            match attractor::convergence(path, 10) {
+                Ok((conv, n)) => println!("Attractor convergence: {conv:.4} (n={n})"),
+                Err(e) => eprintln!("convergence check failed: {e}"),
+            }
+        }
+        _ => {
+            println!("Attractor commands:");
+            println!("  kai attractor status [path]    — show attractor convergence and stats");
+            println!("  kai attractor converge [path]   — check convergence score");
+            println!("  (default path: {default_path})");
+        }
+    }
+}
+
+/// `kai install-service` — install Kai as a systemd user service for 24/7 operation.
+fn install_service_cmd() {
+    let service_name = "kai-fusion";
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/usr/local/bin/kai".to_string());
+    let service_content = format!(
+        "[Unit]\n\
+         Description=Kai-Fusion AGI — autonomous 24/7 attractor-based learning\n\
+         After=network.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart={exe} launch opencode\n\
+         Restart=always\n\
+         RestartSec=10\n\
+         Environment=RUST_LOG=info\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n"
+    );
+
+    let user_service_dir = format!(
+        "{}/.config/systemd/user",
+        std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+    );
+    let service_path = format!("{user_service_dir}/{service_name}.service");
+
+    match std::fs::create_dir_all(&user_service_dir) {
+        Ok(_) => {},
+        Err(e) => { eprintln!("mkdir: {e}"); return; }
+    }
+    match std::fs::write(&service_path, &service_content) {
+        Ok(_) => println!("Wrote systemd user service to {service_path}"),
+        Err(e) => { eprintln!("write failed: {e}"); return; }
+    }
+
+    println!();
+    println!("To enable and start:");
+    println!("  systemctl --user daemon-reload");
+    println!("  systemctl --user enable {service_name}");
+    println!("  systemctl --user start {service_name}");
+    println!();
+    println!("To check status:");
+    println!("  systemctl --user status {service_name}");
+    println!();
+    println!("To view logs:");
+    println!("  journalctl --user -u {service_name} -f");
+}
+
+/// `kai daemon` — 24/7 fixed-point loop with tau decay.
+fn daemon_cmd(action: &str, params: &str) {
+    match action {
+        "start" => {
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.is_empty() {
+                eprintln!("Usage: kai daemon start <gguf_path> [--attractor <path>]");
+                return;
+            }
+            let model_path = parts[0].to_string();
+            let mut cfg = daemon::DaemonConfig::default();
+            cfg.model_path = model_path;
+
+            // Parse optional flags
+            let mut i = 1;
+            let pvec: Vec<&str> = params.split_whitespace().collect();
+            while i < pvec.len() {
+                if pvec[i] == "--attractor" && i + 1 < pvec.len() {
+                    cfg.attractor_path = pvec[i + 1].to_string();
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            }
+
+            eprintln!("[daemon] starting with model={}, attractor={}",
+                cfg.model_path, cfg.attractor_path);
+
+            let stop = Arc::new(AtomicBool::new(false));
+
+            match daemon::run_daemon(&cfg, stop) {
+                Ok(metrics) => {
+                    println!();
+                    println!("[daemon] session ended");
+                    println!("  generations:    {}", metrics.total_generations);
+                    println!("  wall time:      {:.0}s", metrics.uptime_seconds);
+                    println!("  subjective:     {:.0}s", metrics.subjective_seconds);
+                    println!("  final τ:        {:.4}", metrics.tau);
+                    println!("  attractor:      {} vectors, conv={:.4}",
+                        metrics.attractor_vectors, metrics.attractor_convergence);
+                    if metrics.attractor_convergence > 0.95 {
+                        println!("  fixed point:    ✅ CONVERGED");
+                    }
+                }
+                Err(e) => eprintln!("[daemon] error: {e}"),
+            }
+        }
+        _ => {
+            println!("Daemon commands:");
+            println!("  kai daemon start <gguf> [--attractor <path>]  — start 24/7 fixed-point daemon");
+            println!("  (The daemon loads a model, runs a fixed-point loop: generate → push → decay τ → repeat.)");
+        }
+    }
+}
+
+fn print_subtask(s: &goals::Subtask, indent: usize) {
+    let prefix = "  ".repeat(indent);
+    let status = match &s.status {
+        SubtaskStatus::Pending => "⬜",
+        SubtaskStatus::InProgress => "🔄",
+        SubtaskStatus::Completed => "✅",
+        SubtaskStatus::Failed { .. } => "❌",
+        SubtaskStatus::Skipped { .. } => "⏭️ ",
+    };
+    println!("{prefix}{status} [{}] {} — {}", s.id, s.label, s.description);
+    for child in &s.subtasks {
+        print_subtask(child, indent + 1);
     }
 }
