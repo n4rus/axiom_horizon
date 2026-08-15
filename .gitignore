@@ -26,6 +26,64 @@ Thumbs.db
 *.swo
 
 # Large embedded repos
+llvm-project
 llvm-project/
 sources/
 rust/target/
+kai/target/
+kai/attractor.bin
+
+# Rust temp/junk files
+rust/kai-fusion/fix_*
+rust/kai-fusion/temp_*
+rust/kai-fusion/*.restored
+rust/kai-fusion/*.bak
+rust/kai-fusion/*.tmp
+rust/kai-fusion/temp_ast_test
+rust/kai-fusion/fix_lifecycle
+
+# State / backups / runtime artifacts
+.kai_backups/
+.kai_darwin_state.json
+.kai_bracket.json
+.kai_ingest_progress.json
+.kai_physics_params.json
+.kai_physics_bench.jsonl
+.kai_recall_bench.jsonl
+.kai_refine_ledger.jsonl
+attractor.bin
+world_attractor.json
+opencode_history_full/
+quanta_chat
+distillation_pipeline
+domains
+files
+.local/
+# opencode runtime config snapshots (may contain credentials)
+opencode.axiom.backup.json
+opencode.kai.json
+opencode.kai.ollama.json
+opencode_NEW.json
+
+# Huge memory / ingest artifacts — opencode's git snapshot chokes on these
+.kai_doc_memory.json
+.kai_doc_memory.json.bak
+.kai_doc_memory.*.json
+.kai_wiki_memory.json
+.kai_wiki_memory.json.bak
+.kai_wiki_memory.*.json
+.kai_corpus_attractor.json
+.kai_chat_memory.json
+.kai_chat_memory.json.bak
+wiki_filtered/
+opencode_sessions/
+enwiki-*.bz2
+enwiki-*.xml
+rust/external_tests/target/
+
+# Rust backups/temp (untracked leftovers)
+kai/src/*.bak
+kai/src/*.restored
+kai/src/*.tmp
+rust/kai-fusion/src/*.restored
+rust/kai-fusion/src/*.tmp

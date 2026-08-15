@@ -339,7 +339,7 @@ fn temp_dir() -> String {
         let d = temp_dir();
         let path = format!("{d}/append_test.txt");
         let _ = fs_cmd("write", &[&path, "hello"]);
-        let (aout, acode) = fs_cmd("append", &[&path, " world"]);
+        let (_aout, acode) = fs_cmd("append", &[&path, " world"]);
         assert_eq!(acode, 0);
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(content.trim(), "hello world");

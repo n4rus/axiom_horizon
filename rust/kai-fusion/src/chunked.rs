@@ -196,7 +196,7 @@ pub fn train_chunked(
                     for pos in 0..t {
                         let row: Vec<f32> = (0..dim).map(|d| xf[[pos, d]]).collect();
                         let mean_sq: f32 = row.iter().map(|v| v * v).sum::<f32>() / dim as f32;
-                        let inv_std = 1.0 / (mean_sq + engine::EPS).sqrt();
+                        let inv_std: f32 = 1.0 / (mean_sq + engine::EPS).sqrt();
                         for d in 0..dim { d_x[[pos, d]] = d_xf_raw[[pos, d]] * inv_std * cache.final_norm[d]; }
                         let mut sum_term = 0.0;
                         for d in 0..dim { sum_term += d_xf_raw[[pos, d]] * cache.final_norm[d] * row[d]; }
@@ -212,7 +212,7 @@ pub fn train_chunked(
                         d_x = d_x_prev;
                     }
 
-                    ndarray::Zip::from(&mut cache.output).and(&d_output).for_each(|out, &g| {
+                    ndarray::Zip::from(&mut cache.output).and(&d_output).for_each(|out, &g: &f32| {
                         if g.is_finite() { *out -= lr * g.max(-1.0).min(1.0); }
                     });
                 }
@@ -509,14 +509,205 @@ pub fn load_layer(buf: &GgufBuffer, cfg: &Config, li: usize) -> Result<model::La
             w
         }
     };
+    
+    // Try to load MLA tensors (supports both paper and GGUF naming conventions)
+    let (mla_wq_a, mla_wq_b, mla_wk_v_a, mla_wk_b, mla_wv_b, mla_wq_rope, mla_wo,
+         mla_q, mla_kv_a_mqa, mla_kv_b, mla_kv_a_norm) = if cfg.is_mla() {
+        // Try GGUF convention first (DeepSeek-V2 llama.cpp format)
+        // attn_q.weight combines qk_nope + qk_rope into one weight
+        // attn_kv_a_mqa.weight combines v_latent + k_rope projections
+        // attn_kv_b.weight maps v_latent to k_nope + v
+        let mla_q_gguf = match buf.dequant_arr2(&format!("blk.{li}.attn_q.weight")) {
+            Ok(w) => Some(fix(w, cfg.dim)),
+            Err(_) => None,
+        };
+        let mla_kv_a = match buf.dequant_arr2(&format!("blk.{li}.attn_kv_a_mqa.weight")) {
+            Ok(w) => Some(fix(w, cfg.dim)),
+            Err(_) => None,
+        };
+        let mla_kvb = match buf.dequant_arr2(&format!("blk.{li}.attn_kv_b.weight")) {
+            Ok(w) => Some(if w.nrows() != cfg.mla.kv_lora_rank { w.t().to_owned() } else { w }),
+            Err(_) => None,
+        };
+        let mla_kv_an = {
+            let t = buf.tensor(&format!("blk.{li}.attn_kv_a_norm.weight"));
+            t.and_then(|tt| {
+                let d = gguf::read_tensor(&buf.bytes, tt, buf.data_start).ok()?;
+                Some(Array1::from_shape_vec(tt.shape[0], d).ok()?)
+            })
+        };
+        // Try paper convention tensors as fallback
+        let wq_a = match buf.dequant_arr2(&format!("blk.{li}.attn_q_a.weight")) {
+            Ok(w) => Some(fix(w, cfg.mla.q_lora_rank)),
+            Err(_) => None,
+        };
+        let wq_b = match buf.dequant_arr2(&format!("blk.{li}.attn_q_b.weight")) {
+            Ok(w) => Some(fix(w, cfg.dim)),
+            Err(_) => None,
+        };
+        let kv_a = mla_kv_a.clone().or_else(|| {
+            match buf.dequant_arr2(&format!("blk.{li}.attn_kv_a.weight")) {
+                Ok(w) => Some(fix(w, cfg.mla.kv_lora_rank)),
+                Err(_) => None,
+            }
+        });
+        let kv_b = mla_kvb.clone().or_else(|| {
+            match buf.dequant_arr2(&format!("blk.{li}.attn_kv_b.weight")) {
+                Ok(w) => Some(fix(w, cfg.dim)),
+                Err(_) => None,
+            }
+        });
+        let v_b = match buf.dequant_arr2(&format!("blk.{li}.attn_v_b.weight")) {
+            Ok(w) => Some(fix(w, cfg.dim)),
+            Err(_) => None,
+        };
+        let q_rope = match buf.dequant_arr2(&format!("blk.{li}.attn_q_rope.weight")) {
+            Ok(w) => Some(fix(w, cfg.dim)),
+            Err(_) => None,
+        };
+        let wo = match buf.dequant_arr2(&format!("blk.{li}.attn_output.weight")) {
+            Ok(w) => Some(fix(w, cfg.dim)),
+            Err(_) => None,
+        };
+
+        (wq_a, wq_b, kv_a, kv_b, v_b, q_rope, wo,
+         mla_q_gguf, mla_kv_a, mla_kvb, mla_kv_an)
+    } else {
+        (None, None, None, None, None, None, None,
+         None, None, None, None)
+    };
+
+    // Load standard MHA tensors (may be placeholder for MLA models)
+    let (wq, wk, wv) = if mla_wq_a.is_none() {
+        // Standard MHA
+        (
+            fix(buf.dequant_arr2(&format!("blk.{li}.attn_q.weight"))?, cfg.dim),
+            fix(buf.dequant_arr2(&format!("blk.{li}.attn_k.weight"))?, cfg.dim_kv()),
+            fix(buf.dequant_arr2(&format!("blk.{li}.attn_v.weight"))?, cfg.dim_kv())
+        )
+    } else {
+        // MLA model - use placeholder tensors (will be unused by forward_layer_kv dispatch)
+        (
+            Array2::zeros((cfg.dim, cfg.dim)),
+            Array2::zeros((cfg.dim_kv(), cfg.dim)),
+            Array2::zeros((cfg.dim_kv(), cfg.dim))
+        )
+    };
+
+    // Load MoE weights (supports both naming conventions)
+    let (moe_shared_w1, moe_shared_w2, moe_shared_w3,
+         moe_expert_w1, moe_expert_w2, moe_expert_w3,
+         moe_router_weight, moe_router_bias,
+         moe_gate_exps, moe_down_exps, moe_up_exps, moe_gate_inp,
+         moe_shared_gate, moe_shared_down, moe_shared_up) = if cfg.is_moe() {
+        let n_experts = cfg.moe.n_experts;
+        let e_inter = if cfg.expert_intermediate > 0 { cfg.expert_intermediate } else { cfg.intermediate };
+        
+        // Try GGUF convention: ffn_gate_exps.weight (3D) for routed experts
+        let has_gguf_moe = buf.tensor(&format!("blk.{li}.ffn_gate_exps.weight")).is_some();
+        
+        if has_gguf_moe {
+            // GGUF convention: load 3D tensors
+            let ge = Some(buf.dequant_arr3(&format!("blk.{li}.ffn_gate_exps.weight"))?);
+            let de = Some(buf.dequant_arr3(&format!("blk.{li}.ffn_down_exps.weight"))?);
+            let ue = Some(buf.dequant_arr3(&format!("blk.{li}.ffn_up_exps.weight"))?);
+            let inp = Some(fix(buf.dequant_arr2(&format!("blk.{li}.ffn_gate_inp.weight"))?, n_experts));
+            
+            // Shared experts (may not exist for dense layer 0)
+            let sg = match buf.dequant_arr2(&format!("blk.{li}.ffn_gate_shexp.weight")) {
+                Ok(w) => Some(fix(w, cfg.dim)),
+                Err(_) => None,
+            };
+            let sd = match buf.dequant_arr2(&format!("blk.{li}.ffn_down_shexp.weight")) {
+                Ok(w) => Some(fix(w, cfg.dim)),
+                Err(_) => None,
+            };
+            let su = match buf.dequant_arr2(&format!("blk.{li}.ffn_up_shexp.weight")) {
+                Ok(w) => Some(fix(w, cfg.dim)),
+                Err(_) => None,
+            };
+            
+            (None, None, None, None, None, None, None, None,
+             ge, de, ue, inp, sg, sd, su)
+        } else {
+            // Paper convention: individual expert tensors
+            let n_shared = cfg.moe.n_shared;
+            let shared_w1 = match buf.dequant_arr2(&format!("blk.{li}.ffn_shared_gate.weight")) {
+                Ok(w) => Some(fix(w, n_shared * e_inter)),
+                Err(_) => None,
+            };
+            let shared_w2 = match buf.dequant_arr2(&format!("blk.{li}.ffn_shared_down.weight")) {
+                Ok(w) => Some(fix(w, cfg.dim)),
+                Err(_) => None,
+            };
+            let shared_w3 = match buf.dequant_arr2(&format!("blk.{li}.ffn_shared_up.weight")) {
+                Ok(w) => Some(fix(w, n_shared * e_inter)),
+                Err(_) => None,
+            };
+            
+            let mut expert_w1 = Vec::with_capacity(n_experts);
+            let mut expert_w2 = Vec::with_capacity(n_experts);
+            let mut expert_w3 = Vec::with_capacity(n_experts);
+            for e in 0..n_experts {
+                match buf.dequant_arr2(&format!("blk.{li}.ffn_expert.{e}.gate.weight")) {
+                    Ok(w) => expert_w1.push(fix(w, e_inter)),
+                    Err(_) => expert_w1.push(Array2::zeros((e_inter, cfg.dim))),
+                }
+                match buf.dequant_arr2(&format!("blk.{li}.ffn_expert.{e}.down.weight")) {
+                    Ok(w) => expert_w2.push(fix(w, cfg.dim)),
+                    Err(_) => expert_w2.push(Array2::zeros((cfg.dim, e_inter))),
+                }
+                match buf.dequant_arr2(&format!("blk.{li}.ffn_expert.{e}.up.weight")) {
+                    Ok(w) => expert_w3.push(fix(w, e_inter)),
+                    Err(_) => expert_w3.push(Array2::zeros((e_inter, cfg.dim))),
+                }
+            }
+            
+            let router_weight = match buf.dequant_arr2(&format!("blk.{li}.ffn_router.weight")) {
+                Ok(w) => Some(fix(w, n_experts)),
+                Err(_) => None,
+            };
+            let router_bias = match buf.dequant_arr1(&format!("blk.{li}.ffn_router.bias")) {
+                Ok(b) => Some(b),
+                Err(_) => None,
+            };
+            
+            (shared_w1, shared_w2, shared_w3,
+             Some(expert_w1), Some(expert_w2), Some(expert_w3),
+             router_weight, router_bias,
+             None, None, None, None, None, None, None)
+        }
+    } else {
+        (None, None, None, None, None, None, None, None,
+         None, None, None, None, None, None, None)
+    };
+
+    // For MoE layers (GGUF format: has ffn_gate_exps but not ffn_gate.weight),
+    // use placeholder w1/w2/w3 to avoid failed loads.
+    let (w1, w2, w3) = if moe_gate_exps.is_some() || moe_expert_w1.is_some() {
+        // MoE layer — use zero arrays for dense FFN fields (unused)
+        (Array2::zeros((cfg.intermediate, cfg.dim)),
+         Array2::zeros((cfg.dim, cfg.intermediate)),
+         Array2::zeros((cfg.intermediate, cfg.dim)))
+    } else {
+        // Dense FFN layer
+        (
+            fix(buf.dequant_arr2(&format!("blk.{li}.ffn_gate.weight"))?, cfg.intermediate),
+            fix(buf.dequant_arr2(&format!("blk.{li}.ffn_down.weight"))?, cfg.dim),
+            fix(buf.dequant_arr2(&format!("blk.{li}.ffn_up.weight"))?, cfg.intermediate),
+        )
+    };
+
+    let wo = fix(buf.dequant_arr2(&format!("blk.{li}.attn_output.weight"))?, cfg.dim);
+    
     Ok(model::LayerWeights {
-        wq: fix(buf.dequant_arr2(&format!("blk.{li}.attn_q.weight"))?, cfg.dim),
-        wk: fix(buf.dequant_arr2(&format!("blk.{li}.attn_k.weight"))?, cfg.dim_kv()),
-        wv: fix(buf.dequant_arr2(&format!("blk.{li}.attn_v.weight"))?, cfg.dim_kv()),
-        wo: fix(buf.dequant_arr2(&format!("blk.{li}.attn_output.weight"))?, cfg.dim),
-        w1: fix(buf.dequant_arr2(&format!("blk.{li}.ffn_gate.weight"))?, cfg.intermediate),
-        w2: fix(buf.dequant_arr2(&format!("blk.{li}.ffn_down.weight"))?, cfg.dim),
-        w3: fix(buf.dequant_arr2(&format!("blk.{li}.ffn_up.weight"))?, cfg.intermediate),
+        wq,
+        wk,
+        wv,
+        wo,
+        w1,
+        w2,
+        w3,
         attn_norm: {
             let t = buf.tensor(&format!("blk.{li}.attn_norm.weight")).ok_or("missing attn_norm")?;
             let d = gguf::read_tensor(&buf.bytes, t, buf.data_start)?;
@@ -527,6 +718,36 @@ pub fn load_layer(buf: &GgufBuffer, cfg: &Config, li: usize) -> Result<model::La
             let d = gguf::read_tensor(&buf.bytes, t, buf.data_start)?;
             Array1::from_shape_vec(t.shape[0], d).map_err(|e| e.to_string())?
         },
+        // MoE extensions (paper convention)
+        moe_shared_w1,
+        moe_shared_w2,
+        moe_shared_w3,
+        moe_expert_w1,
+        moe_expert_w2,
+        moe_expert_w3,
+        moe_router_weight,
+        moe_router_bias,
+        // MoE extensions (GGUF convention: 3D expert tensors + shared experts)
+        moe_gate_exps,
+        moe_down_exps,
+        moe_up_exps,
+        moe_gate_inp,
+        moe_shared_gate,
+        moe_shared_down,
+        moe_shared_up,
+        // MLA extensions (paper convention)
+        mla_wq_a,
+        mla_wq_b,
+        mla_wk_v_a,
+        mla_wk_b,
+        mla_wv_b,
+        mla_wq_rope,
+        mla_wo,
+        // MLA extensions (GGUF convention: combined Q + kv_a_mqa + kv_b + kv_a_norm)
+        mla_q,
+        mla_kv_a_mqa,
+        mla_kv_b,
+        mla_kv_a_norm,
     })
 }
 

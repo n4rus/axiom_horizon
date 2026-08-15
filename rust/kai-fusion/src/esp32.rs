@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! ESP32 PoGIE bridge — physical integration for Phase 7 (Singularity).
 //!
 //! PoGIE = Process of Global Intelligence Evolution
@@ -17,29 +18,35 @@
 //! structured commands over UART at 115200 baud.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // ── PoGIE Protocol Constants ──────────────────────────────────────────────
 
 /// Default UART baud rate for ESP32-S3 PoGIE bridge.
+#[allow(dead_code)]
 pub const DEFAULT_BAUD_RATE: u32 = 115_200;
 
 /// Default serial port for ESP32-S3 on Linux.
+#[allow(dead_code)]
 pub const DEFAULT_PORT: &str = "/dev/ttyUSB0";
 
 /// Maximum message length over serial (bytes).
-pub const MAX_MESSAGE_LEN: usize = 4096;
+#[allow(dead_code)]
+const MAX_MESSAGE_LEN: usize = 4096;
 
 /// Heartbeat interval for ESP32 nodes (seconds).
-pub const HEARTBEAT_INTERVAL_S: f32 = 10.0;
+#[allow(dead_code)]
+const HEARTBEAT_INTERVAL_S: f32 = 10.0;
 
 /// Energy report interval (seconds).
-pub const ENERGY_REPORT_INTERVAL_S: f32 = 60.0;
+#[allow(dead_code)]
+const ENERGY_REPORT_INTERVAL_S: f32 = 60.0;
 
 // ── PoGIE Node Identity ───────────────────────────────────────────────────
 
 /// Role of a node in the PoGIE network.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum PogieNodeRole {
     /// Coordinator: manages resource allocation for the local network.
     Coordinator,

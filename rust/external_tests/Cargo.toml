@@ -1,0 +1,11 @@
+[package]
+name = "vfe_lightcone"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+kai-fusion = { path = "../kai-fusion" }
+rand = "0.8"
+ndarray = "0.15"

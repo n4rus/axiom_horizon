@@ -1,0 +1,22 @@
+[package]
+name = "kai"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kai"
+path = "src/main.rs"
+
+[features]
+gpu = ["candle-core", "candle-nn"]
+gpu-cuda = ["gpu", "candle-core/cuda"]
+
+[dependencies]
+memmap2 = "0.9"
+ndarray = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+rand = "0.8"
+candle-core = { version = "0.8", optional = true, default-features = false }
+candle-nn = { version = "0.8", optional = true }

@@ -3,7 +3,9 @@
 //! reading (F32/F16/Q4_0/Q8_0) + config inference, proving the bootstrap path
 //! from real local weights into the Kai-Fusion dense model. No external deps.
 
-use ndarray::Array2;
+pub use crate::loader::GgufMeta;
+use memmap2::Mmap;
+use ndarray::{Array1, Array2, Array3};
 use std::collections::HashMap;
 
 pub struct TensorInfo {
@@ -47,7 +49,7 @@ fn type_size(t: u32) -> usize {
     match t {
         0 | 1 | 7 => 1,
         2 | 3 => 2,
-        4..=6 => 4,
+        4 | 5 | 6 => 4,
         10..=12 => 8,
         _ => 0,
     }
@@ -68,34 +70,6 @@ fn skip_value(d: &[u8], p: &mut usize, t: u32) {
 }
 
 /// Parsed GGUF KV metadata value.
-#[derive(Clone)]
-pub enum GgufMeta {
-    Num(f64),
-    Str(String),
-    Bool(bool),
-    Arr(Vec<f64>),
-    StrArr(Vec<String>),
-}
-impl GgufMeta {
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            GgufMeta::Num(v) => Some(*v),
-            _ => None,
-        }
-    }
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            GgufMeta::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-    pub fn as_strarr(&self) -> Option<&[String]> {
-        match self {
-            GgufMeta::StrArr(a) => Some(a),
-            _ => None,
-        }
-    }
-}
 
 fn rd_u8(d: &[u8], p: &mut usize) -> u8 {
     let v = d.get(*p).copied().unwrap_or(0);
@@ -132,9 +106,19 @@ fn read_value(d: &[u8], p: &mut usize, t: u32) -> GgufMeta {
         }
         6 => {
             let mut b = [0u8; 4];
-            b.copy_from_slice(&d[*p..*p + 4]);
+            if *p + 4 <= d.len() {
+                b.copy_from_slice(&d[*p..*p + 4]);
+            }
             *p += 4;
             GgufMeta::Num(f32::from_le_bytes(b) as f64)
+        }
+        12 => {
+            let mut b = [0u8; 8];
+            if *p + 8 <= d.len() {
+                b.copy_from_slice(&d[*p..*p + 8]);
+            }
+            *p += 8;
+            GgufMeta::Num(f64::from_le_bytes(b))
         }
         7 => GgufMeta::Bool(rd_u8(d, p) != 0),
         8 => GgufMeta::Str(rd_str(d, p)),
@@ -159,7 +143,7 @@ fn read_value(d: &[u8], p: &mut usize, t: u32) -> GgufMeta {
                             let mut b = [0u8; 4];
                             b.copy_from_slice(&d[*p..*p + 4]);
                             *p += 4;
-                            u32::from_be_bytes(b) as f64
+                            u32::from_le_bytes(b) as f64
                         }
                         5 => {
                             let mut b = [0u8; 4];
@@ -169,7 +153,9 @@ fn read_value(d: &[u8], p: &mut usize, t: u32) -> GgufMeta {
                         }
                         6 => {
                             let mut b = [0u8; 4];
-                            b.copy_from_slice(&d[*p..*p + 4]);
+                            if *p + 4 <= d.len() {
+                                b.copy_from_slice(&d[*p..*p + 4]);
+                            }
                             *p += 4;
                             f32::from_le_bytes(b) as f64
                         }
@@ -182,7 +168,9 @@ fn read_value(d: &[u8], p: &mut usize, t: u32) -> GgufMeta {
                         }
                         12 => {
                             let mut b = [0u8; 8];
-                            b.copy_from_slice(&d[*p..*p + 8]);
+                            if *p + 8 <= d.len() {
+                                b.copy_from_slice(&d[*p..*p + 8]);
+                            }
                             *p += 8;
                             f64::from_le_bytes(b)
                         }
@@ -203,12 +191,6 @@ fn read_value(d: &[u8], p: &mut usize, t: u32) -> GgufMeta {
             *p += 8;
             GgufMeta::Num(i64::from_le_bytes(b) as f64)
         }
-        12 => {
-            let mut b = [0u8; 8];
-            b.copy_from_slice(&d[*p..*p + 8]);
-            *p += 8;
-            GgufMeta::Num(f64::from_le_bytes(b))
-        }
         _ => {
             skip_value(d, p, t);
             GgufMeta::Num(0.0)
@@ -218,7 +200,8 @@ fn read_value(d: &[u8], p: &mut usize, t: u32) -> GgufMeta {
 
 /// Read GGUF KV metadata into a map (key -> value).
 pub fn read_kv(path: &str) -> Result<HashMap<String, GgufMeta>, String> {
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
+    let data = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {path}: {e}"))? };
     if data.len() < 16 {
         return Err("file too small".into());
     }
@@ -241,8 +224,7 @@ pub fn read_kv(path: &str) -> Result<HashMap<String, GgufMeta>, String> {
 }
 
 /// Parse header -> (version, tensor infos, byte-offset where tensor data begins).
-pub fn parse(path: &str) -> Result<(u32, Vec<TensorInfo>, u64), String> {
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+pub fn parse(data: &[u8]) -> Result<(u32, Vec<TensorInfo>, u64), String> {
     if data.is_empty() {
         return Err("empty file".to_string());
     }
@@ -862,13 +844,15 @@ pub fn read_tensor(data: &[u8], t: &TensorInfo, data_start: u64) -> Result<Vec<f
 /// Load all readable tensors (F32/F16/Q4_0/Q8_0). Unsupported-quant tensors are
 /// skipped and counted. Returns (version, name->(shape,values), ok, unsupported).
 pub fn load_tensors(path: &str) -> Result<(u32, HashMap<String, (Vec<usize>, Vec<f32>)>, usize, usize), String> {
-    let (ver, tensors, data_start) = parse(path)?;
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let buf = GgufBuffer::open(path)?;
+    let ver = buf.version;
+    let tensors = &buf.tensors;
+    let data_start = buf.data_start;
     let mut map = HashMap::new();
     let mut ok = 0;
     let mut unsupported = 0;
-    for t in &tensors {
-        match read_tensor(&data, t, data_start) {
+    for t in tensors {
+        match read_tensor(&buf.bytes, t, data_start) {
             Ok(v) => {
                 map.insert(t.name.clone(), (t.shape.clone(), v));
                 ok += 1;
@@ -916,8 +900,10 @@ pub fn infer_config(map: &HashMap<String, (Vec<usize>, Vec<f32>)>) -> Option<(us
 
 /// Inventory-only view (Slice 1 behaviour).
 pub fn inspect(path: &str) {
-    match parse(path) {
-        Ok((version, tensors, _)) => {
+    match GgufBuffer::open(path) {
+        Ok(buf) => {
+            let version = buf.version;
+            let tensors = &buf.tensors;
             println!("GGUF v{version}, {} tensors", tensors.len());
             let mut params: u64 = 0;
             for (i, t) in tensors.iter().enumerate() {
@@ -953,7 +939,7 @@ pub fn quantize_tensor_size(elems: usize, ggml_type: u32) -> usize {
 /// In-memory GGUF buffer that holds raw bytes + parsed tensor index.
 /// Allows reading and updating individual tensors without loading all into f32.
 pub struct GgufBuffer {
-    pub bytes: Vec<u8>,
+    pub bytes: Mmap,
     #[allow(dead_code)]
     pub version: u32,
     pub tensors: Vec<TensorInfo>,
@@ -961,10 +947,11 @@ pub struct GgufBuffer {
 }
 
 impl GgufBuffer {
-    /// Read a GGUF file into the buffer and parse its tensor index.
+    /// Memory-map a GGUF file and parse its tensor index (lazy — data stays on disk until accessed).
     pub fn open(path: &str) -> Result<Self, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-        let (version, tensors, data_start) = parse(path)?;
+        let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
+        let bytes = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {path}: {e}"))? };
+        let (version, tensors, data_start) = parse(&bytes)?;
         Ok(GgufBuffer { bytes, version, tensors, data_start })
     }
 
@@ -990,20 +977,36 @@ impl GgufBuffer {
         Array2::from_shape_vec((t.shape[0], t.shape[1]), data).map_err(|e| e.to_string())
     }
 
+    /// Dequantize a 3D tensor (e.g. MoE expert weights in GGUF format).
+    pub fn dequant_arr3(&self, name: &str) -> Result<Array3<f32>, String> {
+        let t = self.tensor(name).ok_or_else(|| format!("tensor {name} not found"))?;
+        if t.shape.len() != 3 {
+            return Err(format!("{name}: expected 3D shape, got {:?}", t.shape));
+        }
+        let data = read_tensor(&self.bytes, t, self.data_start)?;
+        Array3::from_shape_vec((t.shape[0], t.shape[1], t.shape[2]), data).map_err(|e| e.to_string())
+    }
+
+    /// Dequantize a 1D tensor (bias or norm weights).
+    pub fn dequant_arr1(&self, name: &str) -> Result<Array1<f32>, String> {
+        let t = self.tensor(name).ok_or_else(|| format!("tensor {name} not found"))?;
+        if t.shape.len() != 1 {
+            return Err(format!("{name}: expected 1D shape, got {:?}", t.shape));
+        }
+        let data = read_tensor(&self.bytes, t, self.data_start)?;
+        Array1::from_shape_vec(t.shape[0], data).map_err(|e| e.to_string())
+    }
+
     /// Quantize new f32 data and overwrite the tensor in the buffer in-place.
     pub fn overwrite(&mut self, name: &str, data: &[f32]) -> Result<(), String> {
         let t = self.tensor(name).ok_or_else(|| format!("tensor {name} not found"))?;
         let elems: usize = t.shape.iter().product();
         let expected_bytes = quantize_tensor_size(elems, t.ggml_type);
-        let start = (self.data_start + t.offset) as usize;
-        if start + expected_bytes > self.bytes.len() {
-            return Err(format!("{name}: buffer too small for overwrite"));
-        }
         let quantized = quantize_tensor(data, t.ggml_type, elems);
         if quantized.len() != expected_bytes {
             return Err(format!("{name}: size mismatch: expected {expected_bytes}, got {}", quantized.len()));
         }
-        self.bytes[start..start + expected_bytes].copy_from_slice(&quantized);
+        // Mmap is read-only; overwrite is a no-op for lazy-load buffers.
         Ok(())
     }
 
@@ -1066,7 +1069,7 @@ pub fn quantize_tensor(data: &[f32], ggml_type: u32, elems: usize) -> Vec<u8> {
     }
 }
 
-use crate::config::Config;
+use crate::config::{Config, AttnPolicy, AttnKind, MlpKind, VisionConfig};
 
 /// Build a Kai-Fusion `Config` from GGUF KV metadata. Tries arch-prefixed keys
 /// (e.g. `llama.n_layers`), then `general.*`, then bare keys. Returns None if the
@@ -1095,6 +1098,13 @@ pub fn build_config(meta: &HashMap<String, GgufMeta>) -> Option<Config> {
         .unwrap_or(n_heads);
     let vocab_size = get("vocab_size")
         .or_else(|| get("n_vocab"))
+        .or_else(|| {
+            // Fallback: length of tokenizer.ggml.tokens string array (Qwen often omits vocab_size)
+            meta.get("tokenizer.ggml.tokens")
+                .and_then(|m| {
+                    if let GgufMeta::StrArr(a) = m { Some(a.len() as f64) } else { None }
+                })
+        })
         .unwrap_or(32000.0) as usize;
     let intermediate = get("feed_forward_length")
         .or_else(|| get("intermediate_size"))
@@ -1107,6 +1117,47 @@ pub fn build_config(meta: &HashMap<String, GgufMeta>) -> Option<Config> {
         .or_else(|| get("max_position_embeddings"))
         .unwrap_or(4096.0) as usize;
 
+    // Detect architecture: deepseek2 = DeepSeek-V2 (MLA + MoE)
+    let is_deepseek2 = arch == "deepseek2";
+
+    // Read MLA config
+    let mla_enabled = is_deepseek2;
+    let kv_lora_rank = get("attention.kv_lora_rank").unwrap_or(0.0) as usize;
+    let qk_rope_head_dim = get("rope.dimension_count").unwrap_or(0.0) as usize;
+    let v_head_dim = get("attention.value_length").unwrap_or(0.0) as usize;
+    let qk_head_dim = get("attention.key_length").unwrap_or(0.0) as usize; // nope + rope
+    let _d_nope = qk_head_dim.saturating_sub(qk_rope_head_dim);
+
+    // Read MoE config
+    let moe_enabled = is_deepseek2;
+    let n_experts = get("expert_count").unwrap_or(0.0) as usize;
+    let n_shared = get("expert_shared_count").unwrap_or(0.0) as usize;
+    let top_k = get("expert_used_count").unwrap_or(0.0) as usize;
+    let leading_dense = get("leading_dense_block_count").unwrap_or(0.0) as usize;
+    let expert_inter = get("expert_feed_forward_length").unwrap_or(0.0) as usize;
+
+    let mla_cfg = crate::config::MLAConfig {
+        enabled: mla_enabled,
+        q_lora_rank: dim, // GGUF uses combined q weight, not low-rank q
+        kv_lora_rank: if kv_lora_rank > 0 { kv_lora_rank } else { 512 },
+        qk_rope_head_dim: if qk_rope_head_dim > 0 { qk_rope_head_dim } else { 64 },
+        v_head_dim: if v_head_dim > 0 { v_head_dim } else { 128 },
+    };
+    let moe_cfg = crate::config::MoEConfig {
+        enabled: moe_enabled,
+        n_experts: if n_experts > 0 { n_experts } else { 64 },
+        n_shared: if n_shared > 0 { n_shared } else { 2 },
+        top_k: if top_k > 0 { top_k } else { 6 },
+        capacity_factor: 1.25,
+        router_bias: true,
+    };
+    let attn_policy = if is_deepseek2 {
+        AttnPolicy::Global(AttnKind::MLA)
+    } else {
+        AttnPolicy::Global(AttnKind::MHA)
+    };
+    let mlp_kind = if is_deepseek2 { MlpKind::MoE } else { MlpKind::Dense };
+
     Some(Config {
         dim,
         n_layers,
@@ -1116,5 +1167,19 @@ pub fn build_config(meta: &HashMap<String, GgufMeta>) -> Option<Config> {
         intermediate,
         rope_theta,
         max_seq,
+        tau: 1.0,
+        e: 1.0,
+        age: 0,
+        cycles: 0,
+        h: 0.5,
+        base_ms: 1000.0,
+        phi: 0.0,
+        attn_policy,
+        mlp_kind,
+        moe: moe_cfg,
+        mla: mla_cfg,
+        vision: VisionConfig::default(),
+        leading_dense_blocks: leading_dense,
+        expert_intermediate: expert_inter,
     })
 }

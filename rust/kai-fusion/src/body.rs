@@ -171,6 +171,232 @@ impl VirtualBody {
         }
     }
 
+    // ===== FILESYSTEM TOOLS =====
+
+    /// Recursively list directory tree up to max_depth (0 = unlimited).
+    pub fn read_tree(&self, path: &str, max_depth: usize) -> ActionResult {
+        let start = std::time::Instant::now();
+        let path = match self.validate_path(Path::new(path)) {
+            Ok(p) => p,
+            Err(e) => return ActionResult { success: false, output: String::new(), error: Some(e), duration_ms: start.elapsed().as_millis() as u64 },
+        };
+        if !path.is_dir() {
+            return ActionResult { success: false, output: String::new(), error: Some(format!("Not a directory: {}", path.display())), duration_ms: start.elapsed().as_millis() as u64 };
+        }
+        let mut output = String::new();
+        self._tree_walk(&path, 0, max_depth, &mut output);
+        ActionResult { success: true, output, error: None, duration_ms: start.elapsed().as_millis() as u64 }
+    }
+
+    fn _tree_walk(&self, dir: &Path, depth: usize, max_depth: usize, out: &mut String) {
+        if max_depth > 0 && depth > max_depth { return; }
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => { out.push_str(&format!("{}[ERR] {}\n", "  ".repeat(depth), e)); return; }
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let ft = entry.file_type().ok();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let prefix = match ft.as_ref() {
+                Some(t) if t.is_dir() => "[DIR] ",
+                Some(t) if t.is_file() => "[FILE] ",
+                Some(t) if t.is_symlink() => "[LINK] ",
+                _ => "[?] ",
+            };
+            out.push_str(&format!("{}{}{}\n", "  ".repeat(depth), prefix, name_str));
+            if let Some(t) = ft.as_ref() {
+                if t.is_dir() {
+                    self._tree_walk(&entry.path(), depth + 1, max_depth, out);
+                }
+            }
+        }
+    }
+
+    /// Find files matching a glob-like pattern (supports * and ? wildcards).
+    pub fn find_file(&self, pattern: &str, start_path: &str) -> ActionResult {
+        let start = std::time::Instant::now();
+        let start_path = match self.validate_path(Path::new(start_path)) {
+            Ok(p) => p,
+            Err(e) => return ActionResult { success: false, output: String::new(), error: Some(e), duration_ms: start.elapsed().as_millis() as u64 },
+        };
+        if !start_path.is_dir() {
+            return ActionResult { success: false, output: String::new(), error: Some(format!("Not a directory: {}", start_path.display())), duration_ms: start.elapsed().as_millis() as u64 };
+        }
+        let pattern = pattern.to_string();
+        let mut results = Vec::new();
+        self._find_walk(&start_path, &pattern, &mut results);
+        results.sort();
+        let output = if results.is_empty() {
+            "No matches found.".to_string()
+        } else {
+            results.join("\n")
+        };
+        ActionResult { success: true, output, error: None, duration_ms: start.elapsed().as_millis() as u64 }
+    }
+
+    fn _find_walk(&self, dir: &Path, pattern: &str, results: &mut Vec<String>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy().to_string();
+            if Self::_matches_pattern(&name_str, pattern) {
+                results.push(entry.path().to_string_lossy().to_string());
+            }
+            if entry.path().is_dir() {
+                self._find_walk(&entry.path(), pattern, results);
+            }
+        }
+    }
+
+    fn _matches_pattern(name: &str, pattern: &str) -> bool {
+        if pattern == "*" { return true; }
+        let name_chars: Vec<char> = name.chars().collect();
+        let pat_chars: Vec<char> = pattern.chars().collect();
+        Self::_match_recursive(&name_chars, 0, &pat_chars, 0)
+    }
+
+    fn _match_recursive(name: &[char], ni: usize, pat: &[char], pi: usize) -> bool {
+        // Both exhausted → match
+        if pi == pat.len() { return ni == name.len(); }
+        if ni > name.len() {
+            // Only wildcard can match empty remaining
+            return pat[pi..].iter().all(|c| *c == '*');
+        }
+        match pat[pi] {
+            '*' => {
+                // Try matching 0 or more chars
+                for k in ni..=name.len() {
+                    if Self::_match_recursive(name, k, pat, pi + 1) {
+                        return true;
+                    }
+                }
+                false
+            }
+            '?' => Self::_match_recursive(name, ni + 1, pat, pi + 1),
+            c => {
+                if ni < name.len() && name[ni] == c {
+                    Self::_match_recursive(name, ni + 1, pat, pi + 1)
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Unified diff between two files (unified format, 3 lines context).
+    pub fn diff(&self, path1: &str, path2: &str) -> ActionResult {
+        let start = std::time::Instant::now();
+        let p1 = match self.validate_path(Path::new(path1)) {
+            Ok(p) => p,
+            Err(e) => return ActionResult { success: false, output: String::new(), error: Some(e), duration_ms: start.elapsed().as_millis() as u64 },
+        };
+        let p2 = match self.validate_path(Path::new(path2)) {
+            Ok(p) => p,
+            Err(e) => return ActionResult { success: false, output: String::new(), error: Some(e), duration_ms: start.elapsed().as_millis() as u64 },
+        };
+        let content1 = match fs::read_to_string(&p1) {
+            Ok(c) => c,
+            Err(e) => return ActionResult { success: false, output: String::new(), error: Some(format!("Read {}: {e}", p1.display())), duration_ms: start.elapsed().as_millis() as u64 },
+        };
+        let content2 = match fs::read_to_string(&p2) {
+            Ok(c) => c,
+            Err(e) => return ActionResult { success: false, output: String::new(), error: Some(format!("Read {}: {e}", p2.display())), duration_ms: start.elapsed().as_millis() as u64 },
+        };
+        let diff = self._unified_diff(&content1, &content2, &p1.to_string_lossy(), &p2.to_string_lossy());
+        ActionResult { success: true, output: diff, error: None, duration_ms: start.elapsed().as_millis() as u64 }
+    }
+
+    fn _unified_diff(&self, a: &str, b: &str, name_a: &str, name_b: &str) -> String {
+        let a_lines: Vec<&str> = a.lines().collect();
+        let b_lines: Vec<&str> = b.lines().collect();
+        let mut out = format!("--- {}\n+++ {}\n", name_a, name_b);
+
+        // Simple LCS-based diff
+        let lcs = self._lcs(&a_lines, &b_lines);
+        let mut ai = 0usize;
+        let mut bi = 0usize;
+
+        for (a_idx, b_idx) in &lcs {
+            // Emit lines between last position and current match as context/deletions/additions
+            while ai < *a_idx || bi < *b_idx {
+                if ai < *a_idx && bi < *b_idx {
+                    // Both have unconsumed lines → they differ
+                    // Emit deletions from a
+                    while ai < *a_idx {
+                        out.push_str(&format!("-{}\n", a_lines[ai]));
+                        ai += 1;
+                    }
+                    // Emit additions from b
+                    while bi < *b_idx {
+                        out.push_str(&format!("+{}\n", b_lines[bi]));
+                        bi += 1;
+                    }
+                } else if ai < *a_idx {
+                    out.push_str(&format!("-{}\n", a_lines[ai]));
+                    ai += 1;
+                } else if bi < *b_idx {
+                    out.push_str(&format!("+{}\n", b_lines[bi]));
+                    bi += 1;
+                }
+            }
+            // Marked as unchanged (context)
+            out.push_str(&format!(" {}\n", a_lines[*a_idx]));
+            ai = *a_idx + 1;
+            bi = *b_idx + 1;
+        }
+
+        // Remaining lines
+        while ai < a_lines.len() {
+            out.push_str(&format!("-{}\n", a_lines[ai]));
+            ai += 1;
+        }
+        while bi < b_lines.len() {
+            out.push_str(&format!("+{}\n", b_lines[bi]));
+            bi += 1;
+        }
+
+        out
+    }
+
+    fn _lcs(&self, a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
+        let n = a.len();
+        let m = b.len();
+        if n == 0 || m == 0 { return vec![]; }
+        // Use Hirschberg's algorithm for space efficiency, but for simplicity use standard DP
+        let mut dp = vec![vec![0usize; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                if a[i] == b[j] {
+                    dp[i][j] = dp[i + 1][j + 1] + 1;
+                } else {
+                    dp[i][j] = dp[i + 1][j].max(dp[i][j + 1]);
+                }
+            }
+        }
+        // Backtrack to find LCS pairs
+        let mut result = Vec::new();
+        let mut i = 0usize;
+        let mut j = 0usize;
+        while i < n && j < m {
+            if a[i] == b[j] {
+                result.push((i, j));
+                i += 1;
+                j += 1;
+            } else if dp[i + 1][j] >= dp[i][j + 1] {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        result
+    }
+
     // ===== SHELL COMMANDS =====
 
     pub fn run_command(&self, cmd: &str, args: &[&str]) -> ActionResult {
@@ -276,6 +502,27 @@ impl VirtualBody {
             },
             "list" => self.list_dir(params),
             "delete" => self.delete_file(params),
+            "tree" => {
+                let parts: Vec<&str> = params.splitn(2, '|').collect();
+                let max_depth = parts.get(1).and_then(|d| d.parse::<usize>().ok()).unwrap_or(0);
+                self.read_tree(parts[0], max_depth)
+            },
+            "find" => {
+                let parts: Vec<&str> = params.splitn(2, '|').collect();
+                if parts.len() != 2 {
+                    ActionResult { success: false, output: String::new(), error: Some("find format: pattern|path".to_string()), duration_ms: 0 }
+                } else {
+                    self.find_file(parts[0], parts[1])
+                }
+            },
+            "diff" => {
+                let parts: Vec<&str> = params.splitn(2, '|').collect();
+                if parts.len() != 2 {
+                    ActionResult { success: false, output: String::new(), error: Some("diff format: path1|path2".to_string()), duration_ms: 0 }
+                } else {
+                    self.diff(parts[0], parts[1])
+                }
+            },
             "shell" => self.shell(params),
             "get" => self.http_get(params),
             "post" => {

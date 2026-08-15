@@ -54,6 +54,7 @@ impl Default for DaemonConfig {
 
 /// Daemon metrics snapshot.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DaemonMetrics {
     pub tau: f32,
     pub vfe: f32,

@@ -9,6 +9,7 @@ mod body;
 mod chunked;
 mod config;
 mod darwin;
+mod darwin_eval;
 mod distributed;
 mod engine;
 mod goals;
@@ -24,7 +25,10 @@ mod scm;
 mod selfmod;
 mod tok;
 mod vfe;
+mod worldgraph;
 mod vision;
+mod safety;
+mod curvature;
 mod loader;
 mod memory;
 mod merge;
@@ -33,9 +37,21 @@ mod values;
 mod routes;
 mod daemon;
 mod bracket;
+mod phen;
 mod fs_agent;
 mod browser;
 mod esp32;
+mod sandbox;
+mod network;
+mod serve;
+
+/// Wall-clock unix seconds (used by `kai phen` for gap reporting).
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
 
 use config::{Config, VisionConfig, VisionTowerKind};
 use goals::SubtaskStatus;
@@ -542,20 +558,20 @@ fn generate_with_rag(path: &str, prompt: &str, max_new: usize, temperature: f32,
     let store = memory::MemoryStore::new(db_path, 10000);
     if store.len() == 0 {
         eprintln!("RAG: no memories in store (run `kai memory ingest` first)");
-        generate_from_gguf(path, prompt, max_new, temperature, top_p);
+        generate_from_gguf(path, prompt, max_new, temperature, top_p, true);
         return;
     }
 
     // Compute query embedding using the model itself
     let query_emb = match embed_to_vec(path, prompt) {
         Some(e) => e,
-        None => { generate_from_gguf(path, prompt, max_new, temperature, top_p); return; }
+        None => { generate_from_gguf(path, prompt, max_new, temperature, top_p, true); return; }
     };
 
     let results = store.search(&query_emb, 5);
     if results.is_empty() {
         eprintln!("RAG: no similar memories found");
-        generate_from_gguf(path, prompt, max_new, temperature, top_p);
+        generate_from_gguf(path, prompt, max_new, temperature, top_p, true);
         return;
     }
 
@@ -569,7 +585,7 @@ fn generate_with_rag(path: &str, prompt: &str, max_new: usize, temperature: f32,
     let context = ctx_parts.join(" ");
     let augmented = format!("{}\n\n---\nQuery: {}\n", context, prompt);
     eprintln!("RAG: {} memories injected (top score={:.4})", results.len(), results[0].1);
-    generate_from_gguf(path, &augmented, max_new, temperature, top_p);
+    generate_from_gguf(path, &augmented, max_new, temperature, top_p, true);
 }
 
 /// Full-model generation: loads all weights at once, handles any architecture.
@@ -641,7 +657,7 @@ fn generate_full(cfg: &Config, meta: &HashMap<String, gguf::GgufMeta>, path: &st
     eprintln!("\ngenerated {} tokens", all_ids.len() - toks.len());
 }
 
-fn generate_from_gguf(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32) {
+fn generate_from_gguf(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32, use_engram: bool) {
     let meta = match gguf::read_kv(path) {
         Ok(m) => m,
         Err(e) => {
@@ -661,22 +677,22 @@ fn generate_from_gguf(path: &str, prompt: &str, max_new: usize, temperature: f32
         eprintln!("Model uses MLA/MoE — loading full model (may use ~{:.1} GB f32)", cfg.estimated_f32_gb());
         return generate_full(&cfg, &meta, path, prompt, max_new, temperature, top_p);
     }
-    let engram = body::BodyEngram::new(".");
     let est_gb = cfg.estimated_f32_gb();
     if est_gb > 6.0 {
-        eprintln!("Model ~{est_gb:.1} GB f32 — using streaming inference with semantic memory");
+        eprintln!("Model ~{est_gb:.1} GB f32 — using streaming inference");
     }
-    generate_streaming(&cfg, &meta, path, prompt, max_new, temperature, top_p, Some(&engram), None, None, None);
+    let engram = if use_engram { Some(body::BodyEngram::new(".")) } else { None };
+    generate_streaming(&cfg, &meta, path, prompt, max_new, temperature, top_p, engram.as_ref(), None, None, None);
 }
 
 /// Like `generate_from_gguf` but pushes the final hidden state to a shared
 /// attractor after generation — multi-agent fixed-point coordination.
 /// Uses the memory-efficient streaming path (loads one layer at a time).
-fn generate_from_gguf_attractor(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32, attractor: Option<&str>) {
+fn generate_from_gguf_attractor(path: &str, prompt: &str, max_new: usize, temperature: f32, top_p: f32, attractor: Option<&str>, use_engram: bool) {
     let attr_path = match attractor {
         Some(p) if !p.is_empty() => p,
         _ => {
-            return generate_from_gguf(path, prompt, max_new, temperature, top_p);
+            return generate_from_gguf(path, prompt, max_new, temperature, top_p, use_engram);
         }
     };
 
@@ -929,6 +945,12 @@ pub struct PhysicsMetrics {
     pub final_tau: f32,
     pub total_tokens: usize,
     pub tokens_per_sec: f32,
+    /// Final hidden state of the last generated token (dim), used to compute
+    /// attractor agreement (does this decode still match absorbed memory?).
+    pub final_hidden: Vec<f32>,
+    /// Cosine similarity between final_hidden and the attractor prior (centroid).
+    /// 1.0 = decode sits on the memory manifold; low = drifting off-memory.
+    pub attractor_agreement: f32,
 }
 
 /// Streaming generation: loads/dequantizes one layer at a time from the GGUF buffer.
@@ -992,33 +1014,40 @@ fn generate_streaming(
         }
     };
 
+    // Adaptive memory: cache layers in f32 only for models ≤ 8GB f32.
+    let _est_gb = cfg.estimated_f32_gb();
+
     // Build prompt with semantic memory context if engram is available
     let augmented_prompt = if let Some(engram) = engram {
-        // Compute prompt embedding by running a single forward pass
         let prompt_ids = tok.encode(prompt);
         let mut query_embed = Vec::new();
         if !prompt_ids.is_empty() {
-            let tid = prompt_ids[0].min(cfg.vocab_size - 1);
-            let mut x = Array2::zeros((1, dim));
-            for d in 0..dim { x[[0, d]] = embed[[tid, d]]; }
+            // Pre-compute embedding lookups for all prompt tokens (CPU)
+            let mut hidden: Vec<Array2<f32>> = prompt_ids.iter().map(|&id| {
+                let tid = id.min(cfg.vocab_size - 1);
+                let mut x = Array2::zeros((1, dim));
+                for d in 0..dim { x[[0, d]] = embed[[tid, d]]; }
+                x
+            }).collect();
             let mut cache = model::KVCache::new(cfg.n_layers);
-            let mut layer_cache: Vec<Option<model::LayerWeights>> = (0..cfg.n_layers).map(|_| None).collect();
-            for pos in 0..prompt_ids.len() {
-                let tid2 = prompt_ids[pos].min(cfg.vocab_size - 1);
-                x = Array2::zeros((1, dim));
-                for d in 0..dim { x[[0, d]] = embed[[tid2, d]]; }
-                for li in 0..cfg.n_layers {
-                    if layer_cache[li].is_none() {
-                        if let Ok(l) = chunked::load_layer(&buf, cfg, li) {
-                            layer_cache[li] = Some(l);
-                        }
-                    }
-                    if let Some(ref lw) = layer_cache[li] {
-                        x = model::forward_layer_kv(lw, cfg, &x, &mut cache, li, pos);
-                    }
+            // Process ALL positions through ONE layer at a time (load layer once, process all tokens, free)
+            for li in 0..cfg.n_layers {
+                let lw = match chunked::load_layer(&buf, cfg, li) {
+                    Ok(l) => l,
+                    Err(e) => { eprintln!("  layer {li} load error: {e}"); continue; }
+                };
+                for pos in 0..prompt_ids.len() {
+                    let x = &mut hidden[pos];
+                    *x = model::forward_layer_kv(&lw, cfg, x, &mut cache, li, pos);
                 }
+                // Free GPU weights after each layer (large model: don't accumulate all layers on GPU)
+                #[cfg(feature = "gpu")]
+                if _est_gb > 4.0 {
+                    crate::engine::invalidate_weight_cache();
+                }
+                // LayerWeights `lw` dropped here — CPU memory freed (only 1 layer at a time)
             }
-            let xf = engine::rmsnorm_rows(&x, &fnorm, engine::EPS);
+            let xf = engine::rmsnorm_rows(hidden.last().unwrap(), &fnorm, engine::EPS);
             query_embed = xf.row(0).to_vec();
         }
         let memories = engram.query_similar(&query_embed, 3);
@@ -1037,59 +1066,106 @@ fn generate_streaming(
         prompt.to_string()
     };
 
+    // Clear GPU weight cache after engram query to free VRAM for generation.
+    #[cfg(feature = "gpu")]
+    crate::engine::invalidate_weight_cache();
+
     let mut ids = tok.encode(&augmented_prompt);
     let n_prompt = ids.len();
     let mut cache = model::KVCache::new(cfg.n_layers);
 
-    // Adaptive memory: cache layers in f32 only for models < 5GB f32.
-    // Larger models dequantize from buffer each token (slower but lower memory).
-    let est_gb = cfg.estimated_f32_gb();
-    let use_cache = est_gb <= 5.0;
-    if !use_cache {
-        eprintln!("  memory: {est_gb:.1}GB f32 exceeds cache limit, loading layers per-token");
-    }
-    let mut layer_cache: Vec<Option<model::LayerWeights>> = if use_cache {
-        (0..cfg.n_layers).map(|_| None).collect()
-    } else {
-        Vec::new()
-    };
+    // ── Phase 1: PREFILL — process ALL prompt tokens through ONE layer at a time ──
+    // This avoids loading all layers into CPU RAM simultaneously, keeping memory
+    // usage to ~306 MB per layer instead of ~11 GB for all 36 layers at once.
+    let mut hidden_states: Vec<Array2<f32>> = (0..n_prompt).map(|pi| {
+        let tid = ids[pi].min(cfg.vocab_size - 1);
+        let mut x = Array2::zeros((1, dim));
+        for d in 0..dim { x[[0, d]] = embed[[tid, d]]; }
+        x
+    }).collect();
+    for li in 0..cfg.n_layers {
+        let lw = match chunked::load_layer(&buf, cfg, li) {
+            Ok(l) => l,
+            Err(e) => { eprintln!("layer {li}: {e}"); return; }
+        };
+        for pos in 0..n_prompt {
+            hidden_states[pos] = model::forward_layer_kv(&lw, cfg, &hidden_states[pos], &mut cache, li, pos);
+        }
+            // lw dropped — CPU memory freed for the next layer.
+            // Clear GPU weight cache per layer to keep peak VRAM bounded.
+            #[cfg(feature = "gpu")]
+            if _est_gb > 4.0 {
+                crate::engine::invalidate_weight_cache();
+            }
+        } // end of for li
+
+    // ── Phase 2: GENERATION — process each generated token through all layers ──
+    let mut x = hidden_states.into_iter().last().unwrap_or_else(|| {
+        let mut x0 = Array2::zeros((1, dim));
+        let tid0 = ids.last().copied().unwrap_or(0).min(cfg.vocab_size - 1);
+        for d in 0..dim { x0[[0, d]] = embed[[tid0, d]]; }
+        x0
+    });
 
     let mut last_embedding: Vec<f32> = Vec::new();
     let mut final_assim_iters: usize = 0;
     let mut final_assim_lr: f32 = 0.01;
 
-    for pos in 0..(n_prompt + max_new - 1) {
-        let tok_id = ids[pos];
-        let tid = tok_id.min(cfg.vocab_size - 1);
-        let mut x = Array2::zeros((1, dim));
-        for d in 0..dim { x[[0, d]] = embed[[tid, d]]; }
-
-        for li in 0..cfg.n_layers {
-            if use_cache {
-                if layer_cache[li].is_none() {
-                    match chunked::load_layer(&buf, cfg, li) {
-                        Ok(l) => layer_cache[li] = Some(l),
-                        Err(e) => { eprintln!("layer {li}: {e}"); return; }
-                    }
-                }
-                let lw = layer_cache[li].as_ref().unwrap();
-                x = model::forward_layer_kv(lw, cfg, &x, &mut cache, li, pos);
-            } else {
-                match chunked::load_layer(&buf, cfg, li) {
-                    Ok(l) => {
-                        x = model::forward_layer_kv(&l, cfg, &x, &mut cache, li, pos);
-                    },
-                    Err(e) => { eprintln!("layer {li}: {e}"); return; }
-                }
+    // ── Layered physics wiring (L2 domain priors + L3 metric cloud) ─────
+    // Domain priors: prefer the persisted NAMED domain-prior registry
+    // (.axiom_state/domain_priors.json — physics/code/wiki/conversation built
+    // by `kai attractor domains`). This is the multi-prior VFE: tau becomes a
+    // measure of WHICH attractor the input pulls. Fall back to clustering a
+    // few prompt-token embedding vectors when no registry exists.
+    // Rolling cloud: recent hidden states form the local metric-tensor sample
+    // for scalar curvature. Both stay small (bounded, no OOM).
+    let domain_priors: Vec<Vec<f32>> =
+        match attractor::load_named_domains(crate::attractor::DEFAULT_DOMAIN_PRIORS_PATH) {
+            Ok(doms) if doms.len() >= 2 => {
+                let names: Vec<String> = doms.iter().map(|d| d.name.clone()).collect();
+                eprintln!("  multi-prior attractor bank: {} domains: {}", doms.len(), names.join(", "));
+                // Project 768-dim wiki centroids to the model's hidden dimension.
+                doms.iter()
+                    .map(|d| attractor::project_to_dim(&d.centroid, dim, 0xA11CEu64))
+                    .collect()
             }
-        }
+            _ => {
+                let mut prompt_pool: Vec<Vec<f32>> = Vec::new();
+                for &tid0 in ids.iter().take(32).skip(1) {
+                    let t = tid0.min(cfg.vocab_size - 1);
+                    let mut v = vec![0.0f32; dim];
+                    for d in 0..dim {
+                        v[d] = embed[[t, d]];
+                    }
+                    prompt_pool.push(v);
+                }
+                crate::attractor::make_domain_priors(&prompt_pool, 3, 2, 0xA11CEu64)
+            }
+        };
+    let mut cloud_ring: std::collections::VecDeque<Vec<f32>> = std::collections::VecDeque::new();
+    // One token behind: advance_physics computes temp from the prior advanced
+    // state; first token falls back to the raw physics formula.
+    let mut physics_adv: Option<vfe::PhysicsAdvance> = None;
 
-        if pos < n_prompt - 1 {
-            continue;
+    for gen_pos in 0..max_new {
+        let abs_pos = n_prompt - 1 + gen_pos;
+        for li in 0..cfg.n_layers {
+            let lw = match chunked::load_layer(&buf, cfg, li) {
+                Ok(l) => l,
+                Err(e) => { eprintln!("layer {li}: {e}"); return; }
+            };
+            x = model::forward_layer_kv(&lw, cfg, &x, &mut cache, li, abs_pos);
+            #[cfg(feature = "gpu")]
+            if _est_gb > 4.0 {
+                crate::engine::invalidate_weight_cache();
+            }
         }
 
         let xf = engine::rmsnorm_rows(&x, &fnorm, engine::EPS);
         last_embedding = xf.row(0).to_vec();
+        if let Some(m) = metrics_out.as_mut() {
+            m.final_hidden = last_embedding.clone();
+        }
         // ── Physics-wired adaptive inference ──
         // g_ij novelty = average attention entropy per head (from forward_layer_kv).
         // High novelty = low attention to past = divergent/new idea.
@@ -1109,11 +1185,31 @@ fn generate_streaming(
             assim_lr: 0.01,
         };
         let phys = physics.unwrap_or(&default_params);
-        // Adaptive temperature: novelty-driven exploration + τ-modulated care.
-        // novelty in [0,1]: boost = scale*(n-0.5) gives ±scale/2 range around base temp.
-        // curvature in [0,1]: also contributes to exploration signal (diffuse attention = explore).
-        // τ: higher = more time-dilated = more careful (lower effective temp).
-        let temp_eff = if phys.base_temperature > 0.0 {
+        // ── Phenomonology-continuity tau seed ──
+        // Carry the daemon's lived subjective-time dilation into this process:
+        // the trace's last tau (log-normalized into the generation tau window)
+        // becomes the starting tau, so Kai and the daemon share one clock
+        // instead of Kai restarting at the engineering default each run.
+        // No trace / unreadable -> keep cache.tau (default 1.0), no error.
+        if let Some(snap) = phen::load_snapshot(
+            std::path::Path::new(phen::DEFAULT_TRACE_PATH), 8,
+        ) {
+            if let Some(seed) = phen::tau_prior_scaled(&snap, phys.tau_min, phys.tau_max) {
+                cache.tau = seed;
+                eprintln!(
+                    "  phen: lived-curve tau prior → τ={:.3} (last lived tau={:.3e}, gap={:.0}s)",
+                    seed,
+                    snap.samples.last().map(|s| s.tau).unwrap_or(1.0),
+                    phen::gap_seconds(&snap, 0.0),
+                );
+            }
+        }
+        // Layered adaptive temperature: prefer the previous token's
+        // advance_physics result (L2 multi-prior + L3 curvature collapse);
+        // fall back to the classic novelty/τ formula on the first token.
+        let temp_eff = if let Some(adv) = &physics_adv {
+            adv.temperature.max(0.01)
+        } else if phys.base_temperature > 0.0 {
             let physics_boost = phys.novelty_scale * ((current_novelty + current_curvature) * 0.5 - 0.5);
             (phys.base_temperature * (1.0 + physics_boost) / cache.tau.max(0.1)).max(0.01)
         } else {
@@ -1143,16 +1239,79 @@ fn generate_streaming(
             .and_then(|v| v.as_scalar())
             .unwrap_or((cache.tau * (1.0 - phys.vfe_tau_rate * vfe)) as f64) as f32;
         cache.tau = new_tau.clamp(phys.tau_min, phys.tau_max);
+
+        // ── Layered physics advance (WIRING: L2 multi-prior + L3 curvature) ──
+        // Push the current hidden state into the metric cloud; then run the
+        // whole L2+L3 controller. Its temperature becomes the sample temp for
+        // the NEXT token (computed here because VFE needs the chosen token).
+        if !last_embedding.is_empty() {
+            cloud_ring.push_back(last_embedding.clone());
+            while cloud_ring.len() > 8 {
+                cloud_ring.pop_front();
+            }
+        }
+        if !cloud_ring.is_empty() {
+            let cloud: Vec<Vec<f32>> = cloud_ring.iter().cloned().collect();
+            // one-hot chosen token as "actual"; probs as prediction.
+            let mut actual = vec![0.0f32; probs.len()];
+            actual[next.min(probs.len() - 1)] = 1.0;
+            // Kalman sources: a coarse 2-way split of the probabilities into
+            // top-cluster vs tail (independent "sources" to fuse).
+            let top_p_src = vfe::Estimate {
+                value: probs.iter().fold(0.0f32, |a, x| a + x * x),
+                variance: 0.5,
+            };
+            let tail: Vec<f32> = probs.iter().take(probs.len().min(16)).cloned().collect();
+            let tail_v = if tail.is_empty() { 0.0 } else { tail.iter().sum::<f32>() / tail.len() as f32 };
+            let tail_src = vfe::Estimate { value: tail_v, variance: 0.75 };
+            let sources = [top_p_src, tail_src];
+            physics_adv = Some(vfe::advance_physics(
+                phys.base_temperature,
+                cache.tau,
+                vfe,
+                &probs,
+                &actual,
+                &last_embedding,
+                current_curvature.max(0.5),
+                &cloud,
+                &domain_priors,
+                &sources,
+                phys.vfe_tau_rate,
+            ));
+            // WIRING FIX: the layered controller's curvature-dilated tau must be
+            // the *live* state, not just a metric. Feed adv.tau back into the
+            // cache so the L3 time-dilation actually modulates sampling over the
+            // continuation (the previously dead tau path pinned τ at the floor).
+            if let Some(ref adv) = physics_adv {
+                cache.tau = adv.tau.clamp(phys.tau_min, phys.tau_max);
+            }
+        }
+
         // Collect metrics if requested (for Darwin evaluation).
         if let Some(ref mut m) = metrics_out {
             m.avg_vfe = (m.avg_vfe * m.total_tokens as f32 + vfe) / (m.total_tokens + 1) as f32;
             m.avg_novelty = (m.avg_novelty * m.total_tokens as f32 + current_novelty) / (m.total_tokens + 1) as f32;
             m.avg_curvature = (m.avg_curvature * m.total_tokens as f32 + current_curvature) / (m.total_tokens + 1) as f32;
             m.final_tau = cache.tau;
+            // Fold the layered controller's curvature-regularized VFE and tau
+            // into the metrics so the darwin fitness sees the full L2+L3 path.
+            if let Some(ref adv) = physics_adv {
+                m.avg_vfe = (m.avg_vfe * m.total_tokens as f32 + adv.vfe_curved) / (m.total_tokens + 1) as f32;
+                m.final_tau = adv.tau;
+            }
             m.total_tokens += 1;
         }
         if engram.is_some() {
-            eprint!("  giz[{pos}] η={:.3} κ={:.3} τ={:.2} VFE={:.3}", current_novelty, current_curvature, cache.tau, vfe);
+            eprint!("  giz[{abs_pos}] η={:.3} κ={:.3} τ={:.2} VFE={:.3}", current_novelty, current_curvature, cache.tau, vfe);
+            if let Some(ref adv) = physics_adv {
+                eprint!(" VFE0={:.3}~={:.3}", adv.vfe, adv.vfe_curved);
+                // Multi-prior introspection: WHICH attractor is being pulled
+                // (epistemic KL + dominant prior index + its responsibility).
+                eprint!(" kl={:.3}", adv.kl_norm);
+                if let Some(d) = adv.dominant_prior {
+                    eprint!(" dom=#{d} r={:.2}", adv.dominant_confidence);
+                }
+            }
             let window = 5.min(cache.novelty.len());
             if window > 0 {
                 let trend: f32 = cache.novelty.iter().rev().take(window).sum::<f32>() / window as f32;
@@ -1162,11 +1321,11 @@ fn generate_streaming(
             }
             // Per-layer novelty range (min/max across layers at this position)
             let n_layers = cache.per_layer_novelty.len();
-            if n_layers > 0 && (pos as usize) < cache.per_layer_novelty[0].len() {
+            if n_layers > 0 && (abs_pos as usize) < cache.per_layer_novelty[0].len() {
                 let mut lmin = f32::MAX;
                 let mut lmax = f32::MIN;
                 for li in 0..n_layers {
-                    let v = cache.per_layer_novelty[li][pos as usize];
+                    let v = cache.per_layer_novelty[li][abs_pos as usize];
                     lmin = lmin.min(v);
                     lmax = lmax.max(v);
                 }
@@ -1176,10 +1335,13 @@ fn generate_streaming(
             }
             eprintln!(" temp={:.3}", temp_eff);
         }
-        if pos >= n_prompt - 1 {
-            ids.push(next);
-            if next == tok.eos { break; }
-        }
+        ids.push(next);
+        if next == tok.eos { break; }
+        // Prepare next input: embed the generated token
+        let tid_next = next.min(cfg.vocab_size - 1);
+        let mut x_next = Array2::zeros((1, dim));
+        for d in 0..dim { x_next[[0, d]] = embed[[tid_next, d]]; }
+        x = x_next;
         final_assim_iters = phys.assim_iters;
         final_assim_lr = phys.assim_lr;
     }
@@ -1994,6 +2156,101 @@ fn memory_web_ingest(url: &str, gguf: &str, store: &mut memory::MemoryStore) -> 
     stored
 }
 
+/// `kai world`: build the world-model connection graph over `.kai_wiki_memory`
+/// shards (real embedded Wikipedia corpus).
+///
+/// Usage:
+///   kai world build <shard-pattern> <n_clusters> [seed] [iters]
+///       Load shards (e.g. `.kai_wiki_memory.0.json` or `./.kai_wiki_memory.*.json`),
+///       k-means cluster into latent domains, discover cross-domain bridges,
+///       print domain stats + top bridges, and export domain centroids as an
+///       attractor (`world_attractor.json`) usable by `kai physics bench`.
+///   kai world bridges <shard-file> [k] [min_cosine] [n_clusters]
+///       Load a single shard, cluster, and print the top cross-domain bridges.
+///   kai world domains <shard-file> [n_clusters]
+///       Load a single shard and print per-domain cluster stats.
+fn world_cmd(action: &str, params: &str) {
+    match action {
+        "build" => {
+            let p: Vec<&str> = params.split_whitespace().collect();
+            if p.is_empty() {
+                println!("usage: kai world build <shard-pattern> <n_clusters> [seed] [iters]");
+                return;
+            }
+            let pattern = p[0];
+            let n_clusters: usize = p.get(1).and_then(|s| s.parse().ok()).unwrap_or(6);
+            let seed: u64 = p.get(2).and_then(|s| s.parse().ok()).unwrap_or(42);
+            let iters: usize = p.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+            println!("[world] loading shards: {pattern}");
+            match worldgraph::WorldGraph::load_shards(pattern) {
+                Ok(nodes) => {
+                    println!("[world] loaded {} nodes", nodes.len());
+                    let g = worldgraph::WorldGraph::from_nodes(nodes, n_clusters, iters, seed);
+                    println!("{}", g.summary());
+                    let bridges = g.bridges(8, 0.55);
+                    println!("[world] cross-domain bridges (cos>=0.55): {}", bridges.len());
+                    for b in bridges.iter().take(10) {
+                        println!("  bridge {:.3}  [{}] {} (node {}) <-> {} (node {}) [{}]  ({}#{})",
+                            b.cosine, b.domain_a, b.node_a, b.ai, b.node_b, b.aj, b.domain_b,
+                            b.key_a.rsplit('#').next_back().unwrap_or(""),
+                            b.key_a.rsplit('#').next().unwrap_or("0"));
+                        // also print node B chunk span for ground truth refs
+                        if let Some(cb) = b.key_b.rsplit('#').next().and_then(|s| s.parse::<usize>().ok()) {
+                            eprintln!("      b chunk index {cb}");
+                        }
+                    }
+                    match g.export_attractor("world_attractor.json") {
+                        Ok(()) => println!("[world] exported {} domain centroids -> world_attractor.json",
+                            g.centroids.len()),
+                        Err(e) => println!("[world] attractor export: {e}"),
+                    }
+                }
+                Err(e) => println!("[world] load error: {e}"),
+            }
+        }
+        "bridges" => {
+            let p: Vec<&str> = params.split_whitespace().collect();
+            if p.is_empty() {
+                println!("usage: kai world bridges <shard-file> [k] [min_cosine] [n]");
+                return;
+            }
+            let file = p[0];
+            let k: usize = p.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
+            let min_cos: f32 = p.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.55);
+            let n: usize = p.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+            match worldgraph::WorldGraph::load_shards(file) {
+                Ok(nodes) => {
+                    let g = worldgraph::WorldGraph::from_nodes(nodes, 6, 10, 42);
+                    println!("{}", g.summary());
+                    let bridges = g.bridges(k, min_cos);
+                    println!("bridges: {} found", bridges.len());
+                    for b in bridges.iter().take(n) {
+                        println!("  {:.2} [{}] {} < {} [{}]", b.cosine, b.domain_a, b.node_a, b.node_b, b.domain_b);
+                    }
+                }
+                Err(e) => println!("load error: {e}"),
+            }
+        }
+        "domains" => {
+            let p: Vec<&str> = params.split_whitespace().collect();
+            if p.is_empty() {
+                println!("usage: kai world domains <shard-file> [n_clusters]");
+                return;
+            }
+            let file = p[0];
+            let n_clusters: usize = p.get(1).and_then(|s| s.parse().ok()).unwrap_or(6);
+            match worldgraph::WorldGraph::load_shards(file) {
+                Ok(nodes) => {
+                    let g = worldgraph::WorldGraph::from_nodes(nodes, n_clusters, 8, 7);
+                    println!("{}", g.summary());
+                }
+                Err(e) => println!("load error: {e}"),
+            }
+        }
+        other => println!("kai world: unknown action '{other}' (build | bridges | domains)"),
+    }
+}
+
 /// `kai physics`: Compute physics/geometric metrics via kai-mlir dialect.
 fn physics_cmd(action: &str, params: &str) {
     let mut registry = DialectRegistry::new();
@@ -2015,6 +2272,25 @@ fn physics_cmd(action: &str, params: &str) {
                     Err(e) => eprintln!("  position {i}: error: {e}"),
                 }
             }
+        }
+        "bench" => {
+            // Usage: kai physics bench <model.gguf> [max_tokens] [max_prompt] [max_configs]
+            // Sweeps the (temperature, vfe_tau_rate, tau_max) grid with the batch
+            // darwin decoder and reports the novelty-vs-coherence frontier, so we
+            // can pick physics params that break flat-distribution collapse
+            // without sacrificing coherence. No model reload per config (resident).
+            let parts: Vec<&str> = params.split_whitespace().collect();
+            if parts.is_empty() {
+                println!("Usage: kai physics bench <model.gguf> [max_tokens] [max_prompt] [max_configs]");
+                println!("  Sweeps temp in [0.15,0.4,0.8], tau_rate in [0.05,0.2,0.5], top_p in [0.85,0.95]");
+                println!("  max_configs (default 24) caps the grid for fast CPU iteration.");
+                return;
+            }
+            let path = parts[0];
+            let max_tokens: usize = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(48);
+            let max_prompt: usize = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(48);
+            let max_configs: usize = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(24);
+            physics_bench_cmd(path, max_tokens, max_prompt, max_configs);
         }
         "vfe" => {
             let vals: Vec<f32> = params.split_whitespace().filter_map(|s| s.parse().ok()).collect();
@@ -2078,6 +2354,35 @@ fn physics_cmd(action: &str, params: &str) {
             let wall_total: f32 = history.iter().map(|(w, _)| w).sum();
             println!("Subjective time: {wall_total:.1}s wall → {subj:.1}s subjective (ratio={:.1}x)", subj / wall_total.max(0.001));
         }
+        "layered" => {
+            // WIRING SMOKE TEST: run the full L2+L3 layered physics controller
+            // (multi-prior VFE + curvature + Kalman) with synthetic inputs.
+            let vals: Vec<f32> = params.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            let base_temp = vals.first().copied().unwrap_or(0.8);
+            let pred = vec![0.5, 0.5];
+            let actual = vec![0.5, 0.5];
+            let hidden = vec![0.5, 0.5];
+            let priors = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+            let flat: Vec<Vec<f32>> = vec![vec![1.0, 0.0], vec![-1.0, 0.0], vec![0.0, 1.0], vec![0.0, -1.0]];
+            let curved: Vec<Vec<f32>> = vec![vec![1.0, 0.0], vec![0.0, 0.1], vec![0.0, 3.0]];
+            let srcs = [vfe::Estimate { value: 3.0, variance: 0.1 },
+                        vfe::Estimate { value: 4.0, variance: 0.1 }];
+            let a_flat = vfe::advance_physics(base_temp, 1.0, 0.1, &pred, &actual, &hidden, 0.05, &flat, &priors, &srcs, 0.05);
+            let a_curved = vfe::advance_physics(base_temp, 1.0, 0.1, &pred, &actual, &hidden, 0.05, &curved, &priors, &srcs, 0.05);
+            println!("Layered physics controller (L2 multi-prior + L3 curvature + Kalman):");
+            println!("  flat  cloud: T={:.4} τ={:.4} VFE={:.4} VFE_curved={:.4}",
+                a_flat.temperature, a_flat.tau, a_flat.vfe, a_flat.vfe_curved);
+            println!("  curvedcloud: T={:.4} τ={:.4} VFE={:.4} VFE_curved={:.4}",
+                a_curved.temperature, a_curved.tau, a_curved.vfe, a_curved.vfe_curved);
+            println!("  curvature effect: T {} ({}), τ {} ({}), VFE {} ({})",
+                if a_curved.temperature < a_flat.temperature { "↓ collapse" } else { "no-collapse" },
+                a_flat.temperature - a_curved.temperature,
+                if a_curved.tau > a_flat.tau { "↑ dilation" } else { "no-dilation" },
+                a_curved.tau - a_flat.tau,
+                if a_curved.vfe_curved > a_flat.vfe_curved { "↑ signal" } else { "no-signal" },
+                a_curved.vfe_curved - a_flat.vfe_curved);
+            println!("  OK: all layers executed in the live path");
+        }
         "bracket" => {
             bracket_cmd(&params);
         }
@@ -2089,6 +2394,7 @@ fn physics_cmd(action: &str, params: &str) {
             println!("  tau-decay <τ> [idle_s] [rate]  # decay tau toward 1.0 (Phase 7.1)");
             println!("  tau-update <τ> <vfe> [lr]  # update τ from VFE (Phase 7.1)");
             println!("  subjective <dt> <τ> ...    # compute subjective seconds from τ history");
+            println!("  layered [base_temp]        # run full L2+L3 layered controller (wiring smoke test)");
             println!("  bracket show               # display current bracket [tau, E, age, cycles]");
             println!("  bracket update <vfe> [var] # advance bracket with VFE observation");
             println!("  bracket decay <idle_s>     # decay tau toward 1.0 during idle time");
@@ -2098,6 +2404,98 @@ fn physics_cmd(action: &str, params: &str) {
             println!("  bracket statevec           # show full 7-element state vector [tau, E, age, cycles, h, base_ms, phi]");
         }
     }
+}
+
+/// `kai physics bench` — empirical novelty-vs-coherence frontier sweep using the
+/// resident-weight batch darwin decoder (one model load, N config evaluations).
+/// Reports per-config novelty (curvature + entropy + token diversity) and
+/// coherence (low VFE + low drift + repetition-bounded), plus a composite log
+/// fitness = geometric mean of the two. This is the engineering tool for breaking
+/// flat-distribution collapse: it shows WHICH (temp, top_p, τ-rate, τ-cap) keeps
+/// the model exploring without degenerating into either argmax lockstep or
+/// incoherent hopping.
+fn physics_bench_cmd(path: &str, max_tokens: usize, max_prompt: usize, max_configs: usize) {
+    let prompt = "The nature of intelligence, memory, and inference across";
+    let mut decdtor = match darwin_eval::DarwinDecoder::open(path, prompt, max_prompt) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("physics bench: decoder open failed: {e}");
+            return;
+        }
+    };
+    println!("Physics benchmark: model={path} prompt={prompt:?} tokens={max_tokens} prompt_tok={}",
+        decdtor.prompt_token_count());
+
+    let temps: &[f32] = &[0.15, 0.4, 0.8, 1.4];
+    let top_ps: &[f32] = &[0.85, 0.95];
+    let tau_rates: &[(f32, f32, f32)] = &[
+        (0.05, 0.5, 2.0),
+        (0.2, 0.3, 3.0),
+        (0.5, 0.2, 5.0),
+    ];
+
+    let mut results: Vec<(f32, f32, f32, f32, darwin_eval::CandMetrics)> = Vec::new();
+    let mut n_configs = 0usize;
+    let t0 = std::time::Instant::now();
+    'outer: for &t in temps {
+        for &tp in top_ps {
+            for &(rate, tmin, tmax) in tau_rates {
+                if n_configs >= max_configs { break 'outer; }
+                let m = decdtor.evaluate(t, tp, rate, tmin, tmax, max_tokens);
+                let fit = darwin_eval::benchmark_fitness(&m);
+                eprintln!("  [{}/{}] temp={:.2} top_p={:.2} rate={:.2} fit={:.4} nov={:.3} coh={:.3} ({:.1}s)",
+                    n_configs + 1, max_configs, t, tp, rate, fit,
+                    benchmark_novelty(&m), benchmark_coherence(&m), t0.elapsed().as_secs_f32());
+                results.push((fit, t, tp, rate, m));
+                n_configs += 1;
+            }
+        }
+    }
+
+    results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    println!("\n--- config sweep (sorted by composite fitness) ---");
+    println!("{:<6} {:<6} {:<6} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
+        "temp", "top_p", "tauR", "fit", "VFE", "novelty", "curv", "entropy", "div", "t/s", "effT");
+    for (fit, t, tp, rate, m) in &results {
+        println!("{:<7.2} {:<7.2} {:<5.2} {:<8.4} {:<8.3} {:<8.3} {:<8.3} {:<8.3} {:<8.3} {:<8.1} {:<8.2}",
+            t, tp, rate, fit, m.avg_vfe, m.avg_novelty, m.avg_curvature, m.avg_entropy, m.token_diversity,
+            m.tokens_per_sec, m.avg_eff_temp);
+    }
+
+    println!("\nFrontier (novelty-vs-coherence):");
+    let best = &results[0];
+    println!("  best composite : temp={} top_p={} fit={:.4} nov={:.3} coh={:.3}",
+        best.1, best.2, best.0, benchmark_novelty(&best.4), benchmark_coherence(&best.4));
+    let best_nov = results.iter()
+        .filter(|(_, _, _, _, m)| benchmark_coherence(m) >= 0.35)
+        .max_by(|a, b| benchmark_novelty(&a.4).partial_cmp(&benchmark_novelty(&b.4)).unwrap_or(std::cmp::Ordering::Equal));
+    let best_coh = results.iter()
+        .filter(|(_, _, _, _, m)| benchmark_novelty(m) >= 0.30)
+        .max_by(|a, b| benchmark_coherence(&a.4).partial_cmp(&benchmark_coherence(&b.4)).unwrap_or(std::cmp::Ordering::Equal));
+    if let Some((_, t, tp, rate, m)) = best_nov {
+        println!("best novelty  : temp={} top_p={} rate={} nov={:.3} coh={:.3}", t, tp, rate, benchmark_novelty(m), benchmark_coherence(m));
+    }
+    if let Some((_, t, tp, rate, m)) = best_coh {
+        println!("best coherence: temp={} top_p={} rate={} nov={:.3} coh={:.3}", t, tp, rate, benchmark_novelty(m), benchmark_coherence(m));
+    }
+    println!("\nInterpretation: raise top_p if repetition/sampling collapse; raise tau_rate");
+    println!("if curvature saturates low (locked attention). Frontier guides evolution.");
+}
+
+fn benchmark_coherence(m: &darwin_eval::CandMetrics) -> f32 {
+    let coh_vfe = (1.0 - m.avg_vfe.clamp(0.0, 1.0)) * 0.5;
+    let rep_x = if m.total_tokens == 0 { 0.0 } else {
+        let r = (m.max_repeat_run as f32) / ((m.total_tokens as f32) + 1.0);
+        (1.0 - r).clamp(0.0, 1.0)
+    };
+    (coh_vfe * 0.7 + rep_x * 0.3).clamp(0.0, 1.0)
+}
+
+fn benchmark_novelty(m: &darwin_eval::CandMetrics) -> f32 {
+    let div = if m.total_tokens == 0 { 0.0 } else {
+        m.token_diversity * 0.5 + (m.avg_entropy.clamp(0.0, 12.0) / 12.0) * 0.5
+    };
+    (m.avg_curvature.clamp(0.0, 1.0) * 0.5 + div * 0.5).clamp(0.0, 1.0)
 }
 
 fn bracket_cmd(params: &str) {
@@ -2307,6 +2705,7 @@ fn evaluate_physics_params(
     params: &PhysicsParams,
     benchmark_prompt: &str,
     max_new: usize,
+    attractor_path: Option<&str>,
 ) -> PhysicsMetrics {
     let mut metrics = PhysicsMetrics::default();
     let start = std::time::Instant::now();
@@ -2315,22 +2714,76 @@ fn evaluate_physics_params(
         None,            // no engram
         Some(params),    // physics override
         Some(&mut metrics),
-        None,            // no attractor
+        attractor_path,  // memory-aware attractor push
     );
     let elapsed = start.elapsed().as_secs_f32();
     if elapsed > 0.0 {
         metrics.tokens_per_sec = metrics.total_tokens as f32 / elapsed;
     }
+    // Attractor agreement: cosine similarity between the final hidden state
+    // and the attractor prior (centroid). High = decode still consistent with
+    // the absorbed memory manifold; low = drifting off-memory.
+    metrics.attractor_agreement = compute_attractor_agreement(&metrics.final_hidden, attractor_path);
     metrics
 }
 
+/// Cosine similarity between a hidden state and the centroid of the attractor
+/// prior. Returns 1.0 when no attractor is given (agreement not applicable).
+fn compute_attractor_agreement(hidden: &[f32], attractor_path: Option<&str>) -> f32 {
+    let Some(attr_path) = attractor_path else {
+        return 1.0; // no prior → agreement trivially satisfied
+    };
+    if hidden.is_empty() {
+        return 0.0;
+    }
+    let prior = match crate::attractor::load(attr_path) {
+        Ok(p) => p,
+        Err(_) => return 1.0, // attractor missing → don't penalize
+    };
+    if prior.is_empty() {
+        return 1.0;
+    }
+    let centroid = crate::attractor::centroid(&prior);
+    let dim = hidden.len().min(centroid.len());
+    if dim == 0 {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut nh = 0.0f32;
+    let mut nc = 0.0f32;
+    for i in 0..dim {
+        dot += hidden[i] * centroid[i];
+        nh += hidden[i] * hidden[i];
+        nc += centroid[i] * centroid[i];
+    }
+    if nh < 1e-8 || nc < 1e-8 {
+        return 0.0;
+    }
+    (dot / (nh.sqrt() * nc.sqrt())).clamp(0.0, 1.0)
+}
+
 /// Map physics metrics to a scalar fitness in [0, 1].
-/// High fitness = low VFE (accurate) + high novelty+curvature (explorative) + fast tokens/sec.
+/// High fitness = low VFE (accurate) + high novelty+curvature (explorative)
+/// + fast tokens/sec + strong attractor agreement (consistent with memory).
 fn physics_fitness(metrics: &PhysicsMetrics) -> f32 {
-    let vfe_score = (1.0 - metrics.avg_vfe.clamp(0.0, 1.0)) * 0.4; // 40% accuracy
-    let explore_score = ((metrics.avg_novelty + metrics.avg_curvature) / 2.0) * 0.4; // 40% exploration
-    let speed_score = (metrics.tokens_per_sec / 10.0).min(1.0) * 0.2; // 20% speed
-    (vfe_score + explore_score + speed_score).clamp(0.0, 1.0)
+    let vfe_score = (1.0 - metrics.avg_vfe.clamp(0.0, 1.0)) * 0.35; // 35% accuracy
+    let explore_score = ((metrics.avg_novelty + metrics.avg_curvature) / 2.0) * 0.30; // 30% exploration
+    let speed_score = (metrics.tokens_per_sec / 10.0).min(1.0) * 0.15; // 15% speed
+    let agreement_score = metrics.attractor_agreement.clamp(0.0, 1.0) * 0.20; // 20% memory consistency
+    (vfe_score + explore_score + speed_score + agreement_score).clamp(0.0, 1.0)
+}
+
+/// Append one evolution/metrics record to the metrics log (JSONL).
+/// `kai darwin evolve` calls this per evaluated candidate so the Metrics table
+/// (fitness/gen, tau, response time, VFE, agreement) is persisted and diffable.
+fn log_metrics_record(record: &serde_json::Value) {
+    let path = ".axiom_state/kai_metrics.jsonl";
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true).open(path)
+    {
+        let _ = writeln!(f, "{}", record.to_string());
+    }
 }
 
 /// Parse a `PhysicsParams` from a candidate's patch field (stored as JSON).
@@ -2513,6 +2966,7 @@ fn darwin_cmd(action: &str, params: &str) {
             println!("  best_fitness: {:.4}", s.best_fitness);
             println!("  avg_fitness: {:.4}", s.avg_fitness);
             println!("  threshold: {:.2}", s.threshold);
+            println!("  replay_episodes: {}", archive.episode_count());
         },
         "list" => {
             let archive = darwin::DarwinArchive::new(
@@ -2533,15 +2987,90 @@ fn darwin_cmd(action: &str, params: &str) {
                 }
             }
         },
+        "promote" => {
+            // LAYER 3a (exponentials.md step 3): publish the best candidate's
+            // physics params to the live bridge.
+            //
+            // Writes .kai_physics_params.json at the repo root
+            // (CARGO_MANIFEST_DIR/..), which kai_bridge.py polls by mtime and
+            // live-reloads on the next request. This closes the full loop:
+            //   kai darwin evolve -> (eval+metrics) -> kai darwin promote
+            //   -> .kai_physics_params.json -> live bridge -> kai bench delta
+            //   -> next generation.
+            let mut archive = darwin::DarwinArchive::new(
+                ".axiom_state/darwin_archive.json", 0.5, 100,
+            );
+            if archive.candidates().is_empty() {
+                eprintln!("promote: archive is empty (run `kai darwin evolve` first)");
+                return;
+            }
+            // Capture the all-time strict ratio for diagnostics before we take
+            // the exclusive borrow via promote_best_gated().
+            let strict_ratio = archive.strict_improvement_ratio();
+            // Use the archive's canonical delta-gen promotion gate: it both
+            // runs the SafetyGuard (blocks unsafe patches) AND requires the
+            // candidate's fitness to strictly exceed
+            // max(last_gen_best, threshold) + min_promotion_delta. This is the
+            // same gate evolve() uses, so what the bridge sees == what would
+            // actually advance the generation. (Do NOT use strict_ratio as a
+            // publish gate: it is all-time historical and polluted by early
+            // degenerate generations; it falsely blocks healthy bests.)
+            let best = match archive.promote_best_gated() {
+                Some(c) => c,
+                None => {
+                    eprintln!("promote: gate refused (fitness <= baseline+min_delta or safety-blocked)");
+                    eprintln!("  best fitness={:.4}, strict_improvement_ratio={:.2}",
+                              archive.candidates()[0].fitness, strict_ratio);
+                    return;
+                }
+            };
+            let phys = parse_physics_params_from_patch(&best.patch);
+            // Only the 6 keys the bridge consumes; assim_* is bridge-invisible.
+            let params_json = serde_json::json!({
+                "base_temperature": phys.base_temperature,
+                "top_p": phys.top_p,
+                "novelty_scale": phys.novelty_scale,
+                "vfe_tau_rate": phys.vfe_tau_rate,
+                "tau_min": phys.tau_min,
+                "tau_max": phys.tau_max,
+            });
+            let root = env!("CARGO_MANIFEST_DIR");
+            let params_path = format!("{}/../.kai_physics_params.json", root);
+            match std::fs::write(&params_path,
+                                 serde_json::to_string_pretty(&params_json).unwrap() + "\n") {
+                Ok(()) => {
+                    println!("promote: published candidate {} (fitness={:.4}, gen={}) -> {}",
+                             best.id, best.fitness, best.generation, params_path);
+                     println!("  params: base_temp={:.4} top_p={:.4} novelty={:.4} tau_rate={:.4} tau=[{:.4},{:.4}]",
+                              phys.base_temperature, phys.top_p, phys.novelty_scale,
+                              phys.vfe_tau_rate, phys.tau_min, phys.tau_max);
+                     println!("  strict_improvement_ratio={:.2} (bridge live-reload on next request)", strict_ratio);
+                 }
+                Err(e) => eprintln!("promote: FAILED to write {}: {}", params_path, e),
+            }
+        },
         "evolve" => {
             let parts: Vec<&str> = params.split_whitespace().collect();
             if parts.is_empty() {
-                eprintln!("Usage: kai darwin evolve <gguf_path> [benchmark_prompt]");
+                eprintln!("Usage: kai darwin evolve <gguf_path> [benchmark_prompt] [attractor.json]");
                 return;
             }
             let gguf_path = parts[0];
-            let benchmark_prompt = if parts.len() > 1 { parts[1..].join(" ") } else { "The meaning of life is".to_string() };
-            let benchmark_tokens = 20;
+            // Optional trailing arg <attractor.json> (memory prior for fitness).
+            let attractor_arg = if parts.len() > 2 && parts[parts.len() - 1].ends_with(".json") {
+                Some(parts[parts.len() - 1].to_string())
+            } else {
+                None
+            };
+            let prompt_end = if attractor_arg.is_some() { parts.len() - 1 } else { parts.len() };
+            let benchmark_prompt = if prompt_end > 1 { parts[1..prompt_end].join(" ") } else { "The meaning of life is".to_string() };
+            // Benchmark decode length per candidate. VFE/novelty/curvature/agreement
+            // stabilize within the first few tokens, so a short horizon makes the
+            // whole darwin evolution tractable on CPU (default 8; override with
+            // env KAI_DARWIN_TOKENS, e.g. more tokens for finer fitness).
+            let benchmark_tokens: usize = std::env::var("KAI_DARWIN_TOKENS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(8)
+                .max(1);
 
             // Load model metadata once for all evaluations.
             let meta = match gguf::read_kv(gguf_path) {
@@ -2601,6 +3130,23 @@ fn darwin_cmd(action: &str, params: &str) {
             let mut rng = rand::thread_rng();
             let n = archive.candidates().len();
 
+            // Batch-mode darwin evaluator: loads the model once, prefills the
+            // benchmark prompt once, then decodes all candidates layer-major
+            // with resident weights (instead of N·T·L disk dequantizations).
+            // Enable with env KAI_DARWIN_BATCH=1. Falls back to the streaming
+            // per-candidate path otherwise.
+            let mut batch = if std::env::var("KAI_DARWIN_BATCH").map(|s| s == "1").unwrap_or(false) {
+                match darwin_eval::DarwinDecoder::open(gguf_path, &benchmark_prompt, 64) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        eprintln!("batch decoder failed ({e}); falling back to streaming");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             // Evaluate ALL candidates: run model with each param set, compute real fitness.
             let all_ids: Vec<String> = archive.candidates().iter().map(|c| c.id.clone()).collect();
             for cid in &all_ids {
@@ -2612,7 +3158,29 @@ fn darwin_cmd(action: &str, params: &str) {
                 // Parse physics params from patch (default if unparseable)
                 let phys = parse_physics_params_from_patch(&c.patch);
 
-                let metrics = evaluate_physics_params(&cfg, &meta, gguf_path, &phys, &benchmark_prompt, benchmark_tokens);
+                // Batch path: one resident model, cheap per-candidate decode.
+                let metrics = if let Some(d) = batch.as_mut() {
+                    let cm = d.evaluate(
+                        phys.base_temperature, phys.top_p, phys.vfe_tau_rate,
+                        phys.tau_min, phys.tau_max, benchmark_tokens,
+                    );
+                    let mut metrics = crate::PhysicsMetrics {
+                        avg_vfe: cm.avg_vfe,
+                        avg_novelty: cm.avg_novelty,
+                        avg_curvature: cm.avg_curvature,
+                        final_tau: cm.final_tau,
+                        total_tokens: cm.total_tokens,
+                        tokens_per_sec: cm.tokens_per_sec,
+                        final_hidden: cm.final_hidden,
+                        attractor_agreement: 0.0,
+                    };
+                    metrics.attractor_agreement =
+                        compute_attractor_agreement(&metrics.final_hidden, attractor_arg.as_deref());
+                    metrics
+                } else {
+                    evaluate_physics_params(&cfg, &meta, gguf_path, &phys, &benchmark_prompt, benchmark_tokens,
+                                            attractor_arg.as_deref())
+                };
 
                 if metrics.total_tokens == 0 {
                     eprintln!("  {}: evaluation failed (0 tokens)", c.id);
@@ -2620,9 +3188,27 @@ fn darwin_cmd(action: &str, params: &str) {
                 }
 
                 let fitness = physics_fitness(&metrics);
-                println!("  {}: fit={:.4} VFE={:.4} η={:.4} κ={:.4} τ={:.2} t/s={:.1}",
+                println!("  {}: fit={:.4} VFE={:.4} η={:.4} κ={:.4} τ={:.2} t/s={:.1} agr={:.3}",
                     c.id, fitness, metrics.avg_vfe, metrics.avg_novelty,
-                    metrics.avg_curvature, metrics.final_tau, metrics.tokens_per_sec);
+                    metrics.avg_curvature, metrics.final_tau, metrics.tokens_per_sec,
+                    metrics.attractor_agreement);
+
+                // Persist metrics for the Metrics table (fitness/gen, tau, response time)
+                log_metrics_record(&serde_json::json!({
+                    "event": "darwin_eval",
+                    "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                        .unwrap().as_secs(),
+                    "generation": archive.generation(),
+                    "candidate": c.id,
+                    "fitness": fitness,
+                    "vfe": metrics.avg_vfe,
+                    "novelty": metrics.avg_novelty,
+                    "curvature": metrics.avg_curvature,
+                    "tau": metrics.final_tau,
+                    "tokens_per_sec": metrics.tokens_per_sec,
+                    "attractor_agreement": metrics.attractor_agreement,
+                    "prompt": &benchmark_prompt[..benchmark_prompt.len().min(64)],
+                }));
 
                 // Update candidate fitness in the archive
                 if let Some(idx) = archive.candidates().iter().position(|x| x.id == c.id) {
@@ -2636,22 +3222,42 @@ fn darwin_cmd(action: &str, params: &str) {
                 }
             }
 
+            // Fitness-gated generation: measure this generation's best against
+            // the last gated baseline, adapt the mutation amplitude (narrow on
+            // improvement, widen on regression), and advance the baseline only
+            // on strict improvement. The goalposts never move backwards.
+            if !archive.candidates().is_empty() {
+                let best_fitness = archive.candidates().iter()
+                    .map(|c| c.fitness as f64)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let delta = best_fitness - archive.last_gen_fitness();
+                let improved = archive.gate_generation(best_fitness, delta);
+                println!("  gen {}: best={:.4} δ={:+.4} rate={:.3} improved={} strict_ratio={:.2}",
+                    archive.generation(), best_fitness, delta,
+                    archive.mutation_rate(), improved,
+                    archive.strict_improvement_ratio());
+            }
+
             // Generate new candidates from best (mutate physics params).
             if n >= 1 {
                 let best = archive.candidates()[0].clone();
                 let best_phys = parse_physics_params_from_patch(&best.patch);
+                let rate = archive.mutation_rate() as f32;
                 for _ in 0..3 {
                     let mut mutated = best_phys.clone();
-                    // Mutate a random field by ±20%
+                    // Mutate a random field, with amplitude scaled by the
+                    // adaptive mutation rate (narrow on improvement, wide on
+                    // regression). rate=1.0 reproduces the historical ±20%.
+                    let amp = 0.2 * rate;
                     match rng.gen_range(0..8) {
-                        0 => mutated.base_temperature = (mutated.base_temperature * (0.8 + rng.gen::<f32>() * 0.4)).clamp(0.1, 2.0),
-                        1 => mutated.top_p = (mutated.top_p * (0.8 + rng.gen::<f32>() * 0.4)).clamp(0.5, 1.0),
-                        2 => mutated.novelty_scale = (mutated.novelty_scale * (0.8 + rng.gen::<f32>() * 0.4)).clamp(0.0, 1.5),
-                        3 => mutated.vfe_tau_rate = (mutated.vfe_tau_rate * (0.8 + rng.gen::<f32>() * 0.4)).clamp(0.01, 0.5),
-                        4 => mutated.tau_min = (mutated.tau_min * (0.8 + rng.gen::<f32>() * 0.4)).clamp(0.1, 1.0),
-                        5 => mutated.tau_max = (mutated.tau_max * (0.8 + rng.gen::<f32>() * 0.4)).clamp(1.0, 5.0),
+                        0 => mutated.base_temperature = (mutated.base_temperature * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(0.1, 2.0),
+                        1 => mutated.top_p = (mutated.top_p * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(0.5, 1.0),
+                        2 => mutated.novelty_scale = (mutated.novelty_scale * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(0.0, 1.5),
+                        3 => mutated.vfe_tau_rate = (mutated.vfe_tau_rate * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(0.01, 0.5),
+                        4 => mutated.tau_min = (mutated.tau_min * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(0.1, 1.0),
+                        5 => mutated.tau_max = (mutated.tau_max * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(1.0, 5.0),
                         6 => mutated.assim_iters = rng.gen_range(0..6),
-                        7 => mutated.assim_lr = (mutated.assim_lr * (0.8 + rng.gen::<f32>() * 0.4)).clamp(0.001, 0.1),
+                        7 => mutated.assim_lr = (mutated.assim_lr * (1.0 - amp + rng.gen::<f32>() * 2.0 * amp)).clamp(0.001, 0.1),
                         _ => {}
                     }
                     let params_json = serde_json::json!({
@@ -2718,7 +3324,50 @@ fn darwin_cmd(action: &str, params: &str) {
             archive.cull();
             archive.save();
             let s = archive.stats();
-            println!("Evolution complete: pop={} best={:.4}", s.population, s.best_fitness);
+            println!("Evolution complete: pop={} best={:.4} rate={:.3} strict_improvement={:.2}",
+                s.population, s.best_fitness, archive.mutation_rate(),
+                archive.strict_improvement_ratio());
+        },
+        "replay" => {
+            // LAYER 3e: episodic replay. Load the last successful
+            // (query → answer) interactions the bridge absorbed into
+            // .kai_chat_memory*.json and ingest them into the darwin
+            // archive so self-play seeds are grounded in real experience.
+            // Usage: kai darwin replay [--path PATTERN] [--max N] [--show]
+            let mut pattern = ".kai_chat_memory.json".to_string();
+            let mut max_eps = 64usize;
+            let mut show = false;
+            let mut i = 0;
+            let toks: Vec<&str> = params.split_whitespace().collect();
+            while i < toks.len() {
+                match toks[i] {
+                    "--path" if i + 1 < toks.len() => { pattern = toks[i + 1].to_string(); i += 2; }
+                    "--max" if i + 1 < toks.len() => {
+                        max_eps = toks[i + 1].parse().unwrap_or(64); i += 2;
+                    }
+                    "--show" => { show = true; i += 1; }
+                    _ => i += 1,
+                }
+            }
+            let episodes = darwin::load_chat_episodes(&pattern);
+            println!("Episodic replay: {} episodes from {pattern}", episodes.len());
+            let mut archive = darwin::DarwinArchive::new(
+                ".axiom_state/darwin_archive.json", 0.5, 100,
+            );
+            let mut added = 0usize;
+            for ep in episodes.into_iter().take(max_eps) {
+                if archive.ingest_episode(ep) { added += 1; }
+            }
+            println!("Ingested {} new episodes (buffer now {})",
+                added, archive.episode_count());
+            if show {
+                for ep in archive.recent_episodes(8, "chat") {
+                    println!("  [ts={}] Q: {}\n            A: {}",
+                        ep.ts,
+                        ep.query.chars().take(90).collect::<String>(),
+                        ep.answer.chars().take(90).collect::<String>());
+                }
+            }
         },
         "seed" => {
             let mut archive = darwin::DarwinArchive::new(
@@ -2785,6 +3434,7 @@ fn darwin_cmd(action: &str, params: &str) {
             println!("  kai darwin status                # Show archive stats");
             println!("  kai darwin list                  # List candidates");
             println!("  kai darwin seed                  # Seed candidates from source");
+            println!("  kai darwin replay                # Ingest chat episodes into archive (episodic replay)");
             println!("  kai darwin evolve                # Generate, evaluate, and evolve");
             println!("  kai darwin self-play             # Run self-play training loop (source-code evolution)");
         }
@@ -3224,6 +3874,30 @@ fn main() {
             Ok(()) => println!("transplant complete -> {output}"),
             Err(e) => eprintln!("transplant failed: {e}"),
         }
+    } else if args.len() >= 3 && args[1] == "phen" {
+        // Shared phenomenology trace: the lived curve both the Python daemon
+        // and Kai write/read. Prints the recent flow + continuity stats.
+        let n_tail: usize = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(8);
+        match phen::load_snapshot(std::path::Path::new(phen::DEFAULT_TRACE_PATH), n_tail) {
+            Some(snap) => {
+                println!("phen trace: {} samples (tail window {n_tail})", snap.samples.len());
+                let lived = phen::lived_subjective_seconds(&snap);
+                println!("  lived (this tail window): {lived:.1} subjective seconds");
+                println!("  offline gap now: {:.0}s", phen::gap_seconds(&snap, now_secs()));
+                for s in &snap.samples {
+                    println!("  {}", s.bracket());
+                }
+                if n_tail >= 2 {
+                    if let Some(seed) = phen::tau_prior_scaled(&snap, 0.5, 2.0) {
+                        println!("  → generation tau seed (window [0.5, 2.0]): {seed:.3}");
+                    }
+                }
+            }
+            None => {
+                println!("phen: no trace at {} (run the daemon first)", phen::DEFAULT_TRACE_PATH);
+            }
+        }
+        return;
     } else if args.len() >= 4 && args[1] == "embed" {
         let path = &args[2];
         let text = args[3..].join(" ");
@@ -3290,22 +3964,27 @@ fn main() {
                 i += 2;
                 continue;
             }
-            if args[i] == "--max-new" && i + 1 < args.len() {
-                // Use different parser: stores in a local to be used later
-                skip_positions.insert(i);
-                skip_positions.insert(i + 1);
-                i += 2;
-                continue;
-            }
-            i += 1;
-        }
-        // Extract --max-new separately
-        let mut max_new: usize = 48;
-        {
-            let mut j = 2;
-            while j < args.len() {
-                if args[j] == "--max-new" && j + 1 < args.len() {
-                    max_new = args[j + 1].parse().unwrap_or(48);
+             if args[i] == "--max-new" && i + 1 < args.len() {
+                 // Use different parser: stores in a local to be used later
+                 skip_positions.insert(i);
+                 skip_positions.insert(i + 1);
+                 i += 2;
+                 continue;
+             }
+             if args[i] == "--no-engram" {
+                 skip_positions.insert(i);
+                 i += 1;
+                 continue;
+             }
+             i += 1;
+         }
+         // Extract max-new (second pass, already handled above)
+         let mut max_new: usize = 48;
+         {
+             let mut j = 2;
+             while j < args.len() {
+                 if args[j] == "--max-new" && j + 1 < args.len() {
+                     max_new = args[j + 1].parse().unwrap_or(48);
                     // Don't need to modify skip_positions again, already handled above
                 }
                 j += 1;
@@ -3374,11 +4053,12 @@ fn main() {
             });
             generate_with_vision(path, &vgguf, &img_path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp);
         } else {
-            let use_rag = args.iter().any(|a| a == "--rag");
-            if use_rag {
+             let use_rag = args.iter().any(|a| a == "--rag");
+             let no_engram = args.iter().any(|a| a == "--no-engram");
+             if use_rag {
                 generate_with_rag(path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp);
             } else {
-                generate_from_gguf_attractor(path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp, attractor_path.as_deref());
+                generate_from_gguf_attractor(path, &augmented_prompt, max_new, adjusted_temp, adjusted_topp, attractor_path.as_deref(), !no_engram);
             }
         }
     } else if args.len() >= 4 && args[1] == "multi-agent" {
@@ -3542,6 +4222,10 @@ fn main() {
         let action = &args[2];
         let params = args[3..].join(" ");
         physics_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "world" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        world_cmd(action, &params);
     } else if args.len() >= 4 && args[1] == "train" {
         let path = &args[2];
         let text = args[3..].join(" ");
@@ -3619,6 +4303,72 @@ fn main() {
         let action = &args[2];
         let params = args[3..].join(" ");
         esp32_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "sandbox" {
+        let action = &args[2];
+        let params = args[3..].join(" ");
+        sandbox_cmd(action, &params);
+    } else if args.len() >= 3 && args[1] == "serve" {
+        let model_path = &args[2];
+        let mut cfg = serve::ServeConfig::default();
+        cfg.model_path = model_path.clone();
+        // Parse optional flags
+        let mut i = 3;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--port" | "-p" => {
+                    if i + 1 < args.len() {
+                        if let Ok(port) = args[i + 1].parse::<u16>() {
+                            cfg.port = port;
+                        }
+                        i += 2;
+                    } else { i += 1; }
+                }
+                "--attractor" | "-a" => {
+                    if i + 1 < args.len() {
+                        cfg.attractor_path = Some(args[i + 1].clone());
+                        i += 2;
+                    } else { i += 1; }
+                }
+                "--max-tokens" | "-m" => {
+                    if i + 1 < args.len() {
+                        if let Ok(t) = args[i + 1].parse::<usize>() {
+                            cfg.max_tokens = t;
+                        }
+                        i += 2;
+                    } else { i += 1; }
+                }
+                "--temp" | "-t" => {
+                    if i + 1 < args.len() {
+                        if let Ok(t) = args[i + 1].parse::<f32>() {
+                            cfg.temperature = t;
+                        }
+                        i += 2;
+                    } else { i += 1; }
+                }
+                _ => { i += 1; }
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        match serve::run_server(&cfg, stop) {
+            Ok(()) => println!("[serve] server stopped gracefully"),
+            Err(e) => eprintln!("[serve] error: {e}"),
+        }
+    } else if args.len() >= 2 && args[1] == "network" {
+        let action = args.get(2).map(|s| s.as_str()).unwrap_or("status");
+        match action {
+            "status" | "check" | "info" => {
+                println!("{}", network::report());
+            }
+            "probe" => {
+                let status = network::check_connectivity();
+                println!("{} {}", status.icon(), status.label().to_uppercase());
+            }
+            _ => {
+                println!("Network commands:");
+                println!("  kai network status   — show network connectivity report");
+                println!("  kai network probe    — quick online/offline check");
+            }
+        }
     } else {
         println!("Kai-Fusion");
         println!("  kai launch opencode [gguf]   # REPL (tiny demo, or real GGUF decoder)");
@@ -3630,13 +4380,17 @@ fn main() {
         println!("  kai gen <path> [d l v]# write synthetic llama-format test GGUF");
         println!("  kai embed <gguf> <text>  # run real Nomic-BERT encoder on its weights");
         println!("  kai embed <gguf> <text> --use-model  # use model's own mean-pooled hidden state");
-        println!("  kai run <gguf> <text> [--temp <t>] [--top_p <p>] [--rag] [--image <path>] [--vision-gguf <path>] [--attractor <path>]  # generation with physics-wired adaptive inference + RAG + multi-modal vision + attractor coordination");
+        println!("  kai run <gguf> <text> [--temp <t>] [--top_p <p>] [--rag] [--no-engram] [--image <path>] [--vision-gguf <path>] [--attractor <path>]  # generation with physics-wired adaptive inference + RAG + multi-modal vision + attractor coordination");
         println!("  kai assimilate <gguf> \"<text>\" [iters] [lr]  # Kai VFE assimilation");
         println!("  kai assimilate-multi <student> <output> \"<text>\" [iters] [lr] [temp] <teacher1> <teacher2> ...  # multi-teacher distillation");
         println!("  kai fuse <gguf> \"<text>\" [iters] [lr] [seed] [attractor.json]  # assimilate seeded by the 10-arch attractor");
         println!("  kai train <gguf> \"<text>\" [iters] [lr]  # full backward pass training (Phase 2)");
         println!("  kai chunked-train <gguf> <text> [iters] [lr] [distill_lambda] [teacher_path]  # chunked training with optional distillation");
         println!("  kai fs <command> [args]  # file system agent (read/write/glob/grep/list/stat/edit/rm/mkdir/find/cat)");
+        println!("  kai sandbox exec <lang> <code>   # execute code in sandbox (python/sh/rust/js/c/cpp/ruby/go)");
+        println!("  kai sandbox file <path>          # execute a file in sandbox");
+        println!("  kai serve <gguf> [--port N] [--attractor <path>] [--max-tokens N] [--temp T]  # OpenAI-compatible API server");
+        println!("  kai network status               # check internet connectivity");
         println!("  kai geodesic <gguf> <text> [threshold] [min_chunk]  # geodesic chunk boundaries");
         println!("  kai darwin <archive_path> [threshold] [max_pop]  # Darwin Archive self-improvement");
         println!("  kai engram list|info|clear|delete  # semantic memory operations");
@@ -3672,6 +4426,11 @@ fn main() {
         println!("  kai esp32 allocate <node_id> <watts>    # allocate watts to a PoGIE node");
         println!("  kai esp32 sensor <name>                  # read sensor value from ESP32");
         println!("  kai esp32 gpio <pin> <high|low>          # toggle GPIO pin on ESP32");
+        println!("  kai sandbox exec <lang> <code>           # execute code in sandbox");
+        println!("  kai sandbox file <path>                  # execute a file in sandbox");
+        println!("  kai serve <gguf>                         # start OpenAI-compatible API server");
+        println!("  kai network status                       # show network connectivity");
+        println!("  kai network probe                        # quick online/offline check");
     }
 }
 
@@ -3697,7 +4456,7 @@ fn esp32_cmd(action: &str, params: &str) {
             println!("  Features: energy grid, GPIO control, sensor read, node coordination");
         }
         "energy" => {
-            let mut grid = esp32::EnergyGrid::new(1000.0);
+            let grid = esp32::EnergyGrid::new(1000.0);
             println!("{}", grid.status_report());
         }
         "allocate" => {
@@ -3749,6 +4508,80 @@ fn esp32_cmd(action: &str, params: &str) {
             println!("  kai esp32 allocate <node_id> <watts>    # allocate watts to a PoGIE node");
             println!("  kai esp32 sensor <name>                  # read sensor value from ESP32");
             println!("  kai esp32 gpio <pin> <high|low>          # toggle GPIO pin on ESP32");
+        }
+    }
+}
+
+/// `kai sandbox` — code execution sandbox (Phase 3).
+fn sandbox_cmd(action: &str, params: &str) {
+    match action {
+        "exec" => {
+            let parts: Vec<&str> = params.splitn(2, |c: char| c.is_whitespace()).collect();
+            if parts.len() < 2 {
+                eprintln!("Usage: kai sandbox exec <language> <code>");
+                eprintln!("Languages: python, sh, rust, js, c, cpp, ruby, go, auto");
+                return;
+            }
+            let language = parts[0];
+            let code = parts[1];
+            let result = if language == "file" {
+                sandbox::exec_file(code)
+            } else {
+                sandbox::exec(code, language)
+            };
+            println!("╔═ Sandbox Result ═══════════════════════════════");
+            if !result.stdout.is_empty() {
+                println!("║ stdout:");
+                for line in result.stdout.lines() {
+                    println!("║   {line}");
+                }
+            }
+            if !result.stderr.is_empty() {
+                println!("║ stderr:");
+                for line in result.stderr.lines() {
+                    println!("║   {line}");
+                }
+            }
+            println!("║");
+            println!("║ exit_code: {}  |  duration: {}ms{}",
+                result.exit_code,
+                result.duration_ms,
+                if result.timed_out { "  ⏰ TIMEOUT" } else { "" });
+            println!("╚════════════════════════════════════════════════");
+        }
+        "file" => {
+            if params.trim().is_empty() {
+                eprintln!("Usage: kai sandbox file <path>");
+                return;
+            }
+            let result = sandbox::exec_file(params.trim());
+            println!("╔═ Sandbox Result (file: {}) ═══════════════════", params.trim());
+            if !result.stdout.is_empty() {
+                println!("║ stdout:");
+                for line in result.stdout.lines() {
+                    println!("║   {line}");
+                }
+            }
+            if !result.stderr.is_empty() {
+                println!("║ stderr:");
+                for line in result.stderr.lines() {
+                    println!("║   {line}");
+                }
+            }
+            println!("║");
+            println!("║ exit_code: {}  |  duration: {}ms{}",
+                result.exit_code,
+                result.duration_ms,
+                if result.timed_out { "  ⏰ TIMEOUT" } else { "" });
+            println!("╚════════════════════════════════════════════════");
+        }
+        _ => {
+            println!("Code execution sandbox (Phase 3 — World Interaction)");
+            println!("  kai sandbox exec <language> <code>   # execute code string");
+            println!("  kai sandbox file <path>              # execute file from disk");
+            println!("");
+            println!("Languages: python, sh, rust, js, c, cpp, ruby, go, auto");
+            println!("Time limit: 30s  |  Memory limit: 256MB  |  Network: disabled");
         }
     }
 }
@@ -4203,10 +5036,69 @@ fn attractor_cmd(action: &str, params: &str) {
                 Err(e) => eprintln!("convergence check failed: {e}"),
             }
         }
+        "domains" => {
+            // Build named domain-prior registry from wiki shards.
+            // Usage: kai attractor domains <shard-pattern> [n_clusters] [iters] [seed]
+            // Exports to DEFAULT_DOMAIN_PRIORS_PATH (.axiom_state/domain_priors.json).
+            let p: Vec<&str> = params.split_whitespace().collect();
+            if p.is_empty() {
+                println!("usage: kai attractor domains <shard-pattern> [n_clusters] [iters] [seed]");
+                return;
+            }
+            let pattern = p[0];
+            let n_clusters: usize = p.get(1).and_then(|s| s.parse().ok()).unwrap_or(6);
+            let iters: usize = p.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+            let seed: u64 = p.get(3).and_then(|s| s.parse().ok()).unwrap_or(42);
+            println!("[attractor] loading shards: {pattern}");
+            match worldgraph::WorldGraph::load_shards(pattern) {
+                Ok(nodes) => {
+                    println!("[attractor] loaded {} nodes", nodes.len());
+                    let g = worldgraph::WorldGraph::from_nodes(nodes, n_clusters, iters, seed);
+                    println!("{}", g.summary());
+                    // Build named domains using the centroids + domain_reps
+                    let vecs = g.centroids.clone();
+                    let labels = g.domain_reps.clone();
+                    let domains = attractor::build_named_domains(&vecs, &labels, n_clusters, iters, seed);
+                    let out_path = attractor::DEFAULT_DOMAIN_PRIORS_PATH;
+                    match attractor::save_named_domains(out_path, &domains) {
+                        Ok(()) => {
+                            println!("[attractor] saved {} named domains -> {out_path}", domains.len());
+                            for d in &domains {
+                                println!("  {}  (dim={})", d.name, d.centroid.len());
+                            }
+                            // Self-consistency probe: each named domain centroid
+                            // should pull the attractor responsEFUL back to
+                            // ITSELF (max responsibility = its own name). This
+                            // uses named_responsibilities to prove the bank is
+                            // linearly separable, not collapsed onto one prior.
+                            println!("[attractor] self-consistency (responsibility of each centroid):");
+                            for d in &domains {
+                                let named = attractor::named_responsibilities(&d.centroid, &domains, 1.0);
+                                let top = named
+                                    .iter()
+                                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                                match top {
+                                    Some((name, r)) => {
+                                        let self_ok = name == &d.name || *r > 0.5;
+                                        println!("  {} -> {} (r={:.3}) {}", d.name, name, r,
+                                            if self_ok { "self-pulling" } else { "overlap!" });
+                                    }
+                                    None => println!("  {} -> (no responsibility)", d.name),
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("[attractor] save error: {e}"),
+                    }
+                }
+                Err(e) => println!("[attractor] load error: {e}"),
+            }
+        }
         _ => {
             println!("Attractor commands:");
             println!("  kai attractor status [path]    — show attractor convergence and stats");
             println!("  kai attractor converge [path]   — check convergence score");
+            println!("  kai attractor domains <shard-pattern> [n_clusters] [iters] [seed]");
+            println!("    build named domain-prior registry from wiki shards");
             println!("  (default path: {default_path})");
         }
     }

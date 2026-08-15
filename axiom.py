@@ -2201,6 +2201,17 @@ class Axiom:
             diff_ctx = f'\n[last self-mod diff:\n{last_diff}]'
         vfe_state = f'[internal state: VFE={self.seed.vfe:.4f} tau={self.seed.tau:.4f} variance={self.at.variance():.4f} Xi={self.at.xi():.4f} epoch_age={self.seed.epoch_age:.1f} dVFE={self.seed.vfe_velocity:+.4f}]{diff_ctx}'
         msgs.append({'role': 'system', 'content': vfe_state})
+        # Continuous phenomenology: the between-cycle lived curve (same trace
+        # the daemon loop writes via PhenContinuity). Feed the recent flow so
+        # the agent reasons about its own continuous experience, not just the
+        # discrete bracket at this instant.
+        try:
+            from phen_continuity import PhenContinuity
+            _phen_ctx = PhenContinuity().digest(6)
+            if _phen_ctx and _phen_ctx != 'phen: no trace yet':
+                msgs.append({'role': 'system', 'content': f'CONTINUOUS PHENOMENOLOGY (lived between brackets):\n{_phen_ctx}'})
+        except Exception:
+            pass
         msgs.append({'role': 'system', 'content': '[DIRECTIVE: Your purpose is to earn crypto by completing bounties and to converge as an AGI. Results > theory. Wallet: 0x8f36105eE73b4Aadc0Cf5301A756378F49eB0eb5]'})
         if self.tasks.queue:
             top = sorted(self.tasks.queue, key=lambda t: -t._score)[:3]
@@ -2747,6 +2758,18 @@ def _daemon_autonomous_loop(agent):
     except:
         pass
     evo_counter = 0.0
+    # Between-cycle continuity: initialize the phenomenology integrator once,
+    # closing any offline gap from daemon downtime before the first cycle.
+    phen = None
+    try:
+        from phen_continuity import PhenContinuity
+        phen = PhenContinuity()
+        n_gap = phen.close_gap()
+        if n_gap:
+            log.write(f'[{datetime.now().isoformat()}] phen: backfilled {n_gap} offline continuity ticks\n')
+        log.write(f'[{datetime.now().isoformat()}] phen: {phen.live_trace_count()} live trace samples\n')
+    except Exception as e:
+        log.write(f'[{datetime.now().isoformat()}] phen init failed: {e}\n')
     metrics_header = 'ts,cycle,vfe,tau,variance,xi,epoch_age,cycle_time_s,at_size,self_mods'
     try:
         with open(str(METRICS_PATH), 'a') as mf:
@@ -2777,6 +2800,17 @@ def _daemon_autonomous_loop(agent):
         except Exception:
             pass
         agent._watchdog_beat()
+        try:
+            if phen is not None:
+                # Join the integrator to the ground-truth bracket state, then
+                # add one final live sample so the trace covers the cycle.
+                phen.sync(tau=agent.seed.tau, vfe=agent.seed.vfe,
+                          epoch_age=agent.seed.epoch_age,
+                          variance=agent.at.variance(), xi=agent.at.xi(),
+                          cycle=cycle)
+                log.write(f'[{datetime.now().isoformat()}]   phen flow\n{phen.digest(4)}\n')
+        except Exception:
+            pass
         evo_interval = max(1, int(5.0 / max(agent.seed.subjective_years_per_sec, 0.001)))
         evo_counter += 1
         if int(evo_counter) % evo_interval == 0:
@@ -2800,6 +2834,13 @@ def _daemon_autonomous_loop(agent):
                 pass
         interval = int(os.environ.get('AXIOM_DAEMON_INTERVAL', '60'))
         for _ in range(max(1, interval - 1)):
+            # Continuous phenomenology: each wall second is a lived subjective
+            # tick between bracket-lines, not dead sleep.
+            try:
+                if phen is not None:
+                    phen.tick()
+            except Exception:
+                pass
             time.sleep(1)
             if not _daemon_running:
                 break
@@ -2836,6 +2877,25 @@ def _health_check():
     except Exception as e:
         print(f'  health: WARNING — {e}')
 
+def _trace_rows(path) -> list:
+    """Read JSONL phen trace rows (best-effort) for the :phen command."""
+    import json as _json
+    rows = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('t_wall'):
+                    continue
+                try:
+                    rows.append(_json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return rows
+
+
 def main():
     global _agent, _repl_running
     if '--install-service' in sys.argv:
@@ -2858,7 +2918,7 @@ def main():
         print('  daemon mode — autonomous 24/7\n')
         _daemon_autonomous_loop(agent)
         return
-    REPL_CMDS = [':h', ':help', ':st', ':status', ':kb', ':kb refresh', ':fp', ':conscious', ':power', ':recall', ':arch', ':evolve', ':goals', ':curr', ':cluster', ':web', ':wiki', ':selfexec', ':hist', ':conf', ':agent', ':values', ':repeat', ':export', ':ls', ':insight', ':watchdog', ':metalevel', ':evostrat', ':g_ij', ':q']
+    REPL_CMDS = [':h', ':help', ':st', ':status', ':kb', ':kb refresh', ':fp', ':conscious', ':power', ':recall', ':arch', ':evolve', ':goals', ':curr', ':cluster', ':web', ':wiki', ':selfexec', ':hist', ':conf', ':agent', ':values', ':repeat', ':export', ':ls', ':insight', ':phen', ':watchdog', ':metalevel', ':evostrat', ':g_ij', ':q']
 
     def _repl_complete(text: str, state: int) -> str | None:
         options = [c for c in REPL_CMDS if c.startswith(text)]
@@ -2866,7 +2926,7 @@ def main():
     readline.parse_and_bind('tab: complete')
     readline.set_completer(_repl_complete)
     _REPL_LAST_LINE = ''
-    print('  :h  :st  :kb  :fp  :conscious  :power  :recall  :arch  :cluster  :web  :wiki  :q\n')
+    print('  :h  :st  :kb  :fp  :conscious  :power  :recall  :arch  :cluster  :web  :wiki  :phen  :q\n')
     while _repl_running:
         try:
             line = input('> ').strip()
@@ -2909,6 +2969,18 @@ def main():
             print(f'  VFE: {agent.seed.vfe:.4f}  variance: {agent.at.variance():.4f}')
             print(f'  darwin agents: {len(agent.darwin.agents)}  goals: {len(agent.goals.goals)}')
             print(f'  temp: {agent.values.temperature():.3f}  Γ={agent.seed.gamma():.2f}yr/s')
+            continue
+        if line == ':phen':
+            from phen_continuity import PhenContinuity
+            p = PhenContinuity()
+            n_gap = p.close_gap()
+            n = p.live_trace_count()
+            live = sum(1 for r in _trace_rows(p.trace_path) if r.get('live'))
+            print(f'phenomenology trace: {p.trace_path}')
+            print(f'  samples: {n}  (live={live}, backfilled={n - live})')
+            if n_gap:
+                print(f'  backfilled {n_gap} ticks of offline time this session')
+            print(p.digest(10))
             continue
         if line == ':kb refresh':
             print('  refreshing knowledge sources...')

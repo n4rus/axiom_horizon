@@ -3,7 +3,7 @@
 //! GGUF produced by our own reader. Not a trained model — a correctness harness
 //! for the load -> map -> generate path (the same path a real llama GGUF uses).
 
-use crate::config::Config;
+use crate::config::{Config, AttnPolicy, AttnKind, MlpKind, MoEConfig, MLAConfig, VisionConfig};
 use crate::gguf::GgufMeta;
 use std::fs::File;
 use std::io::Write;
@@ -122,6 +122,20 @@ pub fn gen(path: &str, dim: usize, layers: usize, vocab: usize, words: &[&str]) 
         intermediate: dim * 2,
         rope_theta: 10000.0,
         max_seq: 256,
+        attn_policy: AttnPolicy::Global(AttnKind::MHA),
+        mlp_kind: MlpKind::Dense,
+        moe: MoEConfig::default(),
+        mla: MLAConfig::default(),
+        vision: VisionConfig::default(),
+        tau: 1.0,
+        e: 1.0,
+        age: 0,
+        cycles: 0,
+        h: 0.5,
+        base_ms: 1000.0,
+        phi: 0.0,
+        leading_dense_blocks: 0,
+        expert_intermediate: 0,
     };
     let dk = cfg.dim_kv();
     let mut rng = Rng(0x1234_5678);

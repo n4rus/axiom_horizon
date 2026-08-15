@@ -7,8 +7,14 @@ edition = "2021"
 name = "kai"
 path = "src/main.rs"
 
+[lib]
+name = "kai_fusion"
+path = "src/lib.rs"
+
 [features]
-gpu = []
+gpu = ["candle-core", "candle-nn"]
+gpu-cuda = ["gpu", "candle-core/cuda"]
+serial = []
 
 [dependencies]
 memmap2 = "0.9"
@@ -18,7 +24,7 @@ serde_json = "1"
 tempfile = "3"
 rand = "0.8"
 kai-mlir = { path = "../kai-mlir" }
-ureq = "2"
+ureq = { version = "2", features = ["tls"] }
 rayon = "1.10"
 rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
 syn = { version = "2", features = ["full", "extra-traits", "visit-mut"] }
@@ -26,3 +32,6 @@ quote = "1"
 proc-macro2 = "1"
 image = "0.24"
 glob = "0.3"
+tiny_http = "0.12"
+candle-core = { version = "0.8", optional = true, default-features = false }
+candle-nn = { version = "0.8", optional = true }

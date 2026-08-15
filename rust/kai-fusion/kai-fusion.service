@@ -1,0 +1,32 @@
+# Kai-Fusion systemd service template
+# Install: sudo cp kai-fusion.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable kai-fusion
+#          sudo systemctl start kai-fusion
+#
+# Status:  sudo systemctl status kai-fusion
+# Logs:    sudo journalctl -u kai-fusion -f
+
+[Unit]
+Description=Kai-Fusion AI Agent (24/7)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=l
+WorkingDirectory=/home/l/Desktop/AxiomTree/axiom_horizon/rust/target/release
+ExecStart=/home/l/Desktop/AxiomTree/axiom_horizon/rust/target/release/kai run /usr/share/ollama/.ollama/models/blobs/sha256-2af3b81862c6be03c769683af18efdadb2c33f60ff32ab6f83e42c043d6c7816 --temp 0.8 "Hello, I am Kai."
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=RUST_LOG=info
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=200%
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

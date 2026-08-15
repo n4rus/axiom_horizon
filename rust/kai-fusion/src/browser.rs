@@ -93,11 +93,9 @@ fn html_to_text(html: &str) -> String {
             // Read up to '>' to get the tag name
             let mut tag = String::new();
             let mut is_closing = false;
-            let mut done = false;
             while let Some(&next) = chars.peek() {
                 chars.next(); // consume
                 if next == '>' {
-                    done = true;
                     break;
                 }
                 if next == '/' && tag.is_empty() {
@@ -112,7 +110,7 @@ fn html_to_text(html: &str) -> String {
                 // Skip until </script> or </style>
                 let skip_tag = format!("</{}", tag_lower);
                 let mut skip_buf = String::new();
-                while let Some(&next) = chars.peek() {
+                while let Some(&_next) = chars.peek() {
                     let ch = chars.next().unwrap();
                     skip_buf.push(ch);
                     if skip_buf.len() > skip_tag.len() + 10 {
