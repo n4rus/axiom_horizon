@@ -59,7 +59,19 @@ echo "$(date -Is) replay done" >> "$LOG"
 timeout "$EVOLVE_TIMEOUT_S" "$KAI" darwin self-play >> "$LOG" 2>&1
 echo "$(date -Is) self-play done rc=$?" >> "$LOG"
 
-# Step 3: test gate — the trainer evolves candidates in-memory and persists
+# Step 3: corpus-param evolution (OOM-safe Python path, bridge-evaluated).
+# This is the path that reached fitness 0.6591 (vs Rust self-play 0.3928).
+# Its publish step (added 2026-08-15) writes .kai_physics_params.json with
+# the same strict-improvement gate as promote_best_gated, and the bridge
+# live-reloads it on the next request. Runs AFTER the rust self-play so both
+# paths evolve; whichever strictly improves publishes.
+if python3 tools/kai_darwin_corpus.py --generations 5 --population 6 --samples 4 >> "$LOG" 2>&1; then
+  echo "$(date -Is) corpus evolve done (published or gated-refused)" >> "$LOG"
+else
+  echo "$(date -Is) corpus evolve rc=$? (bridge/embed contention — skipped)" >> "$LOG"
+fi
+
+# Step 4: test gate — the trainer evolves candidates in-memory and persists
 # only the archive; it never writes source files, so a failed gate leaves
 # nothing to revert (and we MUST NOT git-checkout the rust tree — that would
 # wipe the day's working changes). Gate = the tree still compiles+passes.
@@ -69,7 +81,7 @@ if ! cargo test --release --manifest-path rust/Cargo.toml >> "$LOG" 2>&1; then
 fi
 echo "$(date -Is) tests PASS" >> "$LOG"
 
-# Step 4: commit only the evolutionary state (darwin archive + episode
+# Step 5: commit only the evolutionary state (darwin archive + episode
 # buffer). Source files are intentionally NOT staged — self-play persists
 # candidates/parameters/episodes in the archive JSON only.
 if git status --porcelain .axiom_state/darwin_archive.json 2>/dev/null | grep -q .; then

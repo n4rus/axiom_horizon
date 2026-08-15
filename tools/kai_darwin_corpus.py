@@ -394,7 +394,56 @@ def main():
     print(f"Best params:", file=sys.stderr)
     for k, v in best_params.items():
         print(f"  {k}: {v}", file=sys.stderr)
-    print(f"\nTo apply these params, update kai_bridge.py or add to opencode.json", file=sys.stderr)
+
+    # ── Publish to the live bridge (closes the loop) ──────────────────────
+    # Mirrors `kai darwin promote`: writes .kai_physics_params.json at the
+    # repo root in exactly the 6 keys kai_bridge.py polls on every request.
+    # Safety gate (same semantics as promote_best_gated): only publish when
+    # this run's best strictly improves over the last PUBLISHED fitness,
+    # never regress the bridge, never move the goalposts backwards.
+    publish_path = os.path.join(ROOT, ".kai_physics_params.json")
+    prev_published = 0.0
+    state_path = os.path.join(ROOT, ".kai_darwin_state.json")
+    try:
+        with open(state_path) as f:
+            prev_published = json.load(f).get("published_fitness", 0.0)
+    except Exception:
+        pass
+    min_delta = 0.01
+    if best_fitness > prev_published + min_delta:
+        bridge_keys = {
+            "base_temperature": best_params.get("base_temperature", 0.33),
+            "top_p": best_params.get("top_p", 0.997),
+            "novelty_scale": best_params.get("novelty_scale", 0.30),
+            "vfe_tau_rate": best_params.get("vfe_tau_rate", 0.061),
+            "tau_min": best_params.get("tau_min", 0.855),
+            "tau_max": best_params.get("tau_max", 1.657),
+        }
+        try:
+            with open(publish_path, "w") as f:
+                json.dump(bridge_keys, f, indent=1)
+            print(f"\nPUBLISHED {best_fitness:.4f} > {prev_published:.4f} "
+                  f"(+{best_fitness - prev_published:.4f}) -> {publish_path} "
+                  f"(bridge live-reloads on next request)",
+                  file=sys.stderr)
+            # Record published fitness so the next run must strictly beat it.
+            # Merge into the existing state file (preserve population/history).
+            try:
+                with open(state_path) as f:
+                    state = json.load(f)
+            except Exception:
+                state = {}
+            state["generation"] = gen + 1
+            state["best_fitness"] = best_fitness
+            state["published_fitness"] = best_fitness
+            with open(state_path, "w") as f:
+                json.dump(state, f, indent=1)
+        except OSError as e:
+            print(f"  [WARN] publish FAILED: {e}", file=sys.stderr)
+    else:
+        print(f"\nGATE REFUSED: best {best_fitness:.4f} <= published "
+              f"{prev_published:.4f} + {min_delta} (no regression, no publish)",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
