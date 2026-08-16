@@ -159,6 +159,36 @@ def judge(judge_model: str, q: str, a: str, b: str) -> dict:
             "winner": "A" if len(a) >= len(b) else "B", "parse_fail": txt[:120],
         }
 
+# ── Isolated judge: rate ONE answer against a rubric (no pairing) ─────────
+# The paired judge's contrast effect makes raw scores drift with whichever
+# physics answer they're paired with (greedy raw 3.58 vs 3.92 across runs
+# despite identical raw answers). Isolated judging fixes the baseline: raw
+# answers are rated once vs a rubric and cached; physics answers are rated
+# the same way; delta = physics - fixed_raw. Honest, reproducible baseline.
+def judge_isolated(judge_model: str, q: str, answer: str) -> dict:
+    prompt = (
+        "You are an impartial evaluation judge. Rate this answer on factual "
+        "completeness (1-5) and groundedness/relevance to the question (1-5). "
+        "Be strict; prefer correct, specific, on-topic content over padding.\n\n"
+        f"QUESTION: {q}\n\n"
+        f"ANSWER:\n{answer[:800]}\n\n"
+        "Reply ONLY as JSON: {\"complete\":N,\"ground\":N}\n"
+    )
+    body = {"model": judge_model, "messages": [{"role": "user", "content": prompt}],
+            "stream": False, "options": {"temperature": 0.0, "num_predict": 60}}
+    req = urllib.request.Request(f"{STOCK}/api/chat", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=180) as r:
+        d = json.loads(r.read())
+    txt = d.get("message", {}).get("content", "").strip()
+    try:
+        if "```" in txt:
+            txt = txt.split("```")[1] if txt.count("```") >= 2 else txt
+        return json.loads(txt)
+    except Exception:
+        return {"complete": 0, "ground": 0, "parse_fail": txt[:120]}
+
+
 # ── Embed → cosine (self-consistency scoring) ─────────────────────────────
 def embed(text: str):
     body = {"model": EMBED_MODEL, "input": text[:2000]}
@@ -201,6 +231,11 @@ def main():
                     help="temperature for the raw baseline (default 0.0 = greedy, "
                          "deterministic across model reloads). Keep 0.0 for honest "
                          "pinned baselines.")
+    ap.add_argument("--isolate", action="store_true",
+                    help="rate answers in isolation vs a rubric (no pairing): raw "
+                         "baseline judged once per query and cached, physics rated "
+                         "same way. Removes the paired-judge contrast effect that "
+                         "drifts raw scores 3.58->3.92 across identical runs.")
     args = ap.parse_args()
 
     qs = QUERIES[: args.queries]
@@ -224,24 +259,41 @@ def main():
     dev_count = 0  # queries where adapted temp ||deviated|| from the base knob
     base_knob = 0.7
     retried_total = 0
+    raw_cache = {}  # isolated baseline scores per query (fixed)
     for qi, q in enumerate(qs):
         pa, phys = answer_fn(q)
-        ra = raw_answer(args.worker, q, temperature=args.raw_temp, seed=args.raw_seed)
         novel.append(phys.get("novelty", 0.5)); temps.append(phys.get("temperature", -1)); taus.append(phys.get("tau", -1))
         if args.recall:
             retried_total += 1 if phys.get("retried") else 0
         if abs(phys.get("temperature", base_knob) - base_knob) >= 0.05:
             dev_count += 1
-        j = judge(args.judge, q, pa, ra)
-        sa = (j.get("a_complete", 0) + j.get("a_ground", 0)) / 2
-        sb = (j.get("b_complete", 0) + j.get("b_ground", 0)) / 2
-        scores_a.append(sa); scores_b.append(sb)
-        if j.get("winner") == "A": wins += 1
-        elif j.get("winner") == "B": losses += 1
-        else: ties += 1
+        if args.isolate:
+            # Rate physics in isolation vs rubric; reuse cached raw baseline.
+            jp = judge_isolated(args.judge, q, pa)
+            sa = (jp.get("complete", 0) + jp.get("ground", 0)) / 2
+            if q not in raw_cache:
+                ra = raw_answer(args.worker, q, temperature=args.raw_temp, seed=args.raw_seed)
+                jr = judge_isolated(args.judge, q, ra)
+                raw_cache[q] = (jr.get("complete", 0) + jr.get("ground", 0)) / 2
+            sb = raw_cache[q]
+            scores_a.append(sa); scores_b.append(sb)
+            wins += 1 if sa > sb else 0
+            losses += 1 if sa < sb else 0
+            ties += 1 if sa == sb else 0
+            winner = "A" if sa > sb else ("B" if sa < sb else "TIE")
+        else:
+            ra = raw_answer(args.worker, q, temperature=args.raw_temp, seed=args.raw_seed)
+            j = judge(args.judge, q, pa, ra)
+            sa = (j.get("a_complete", 0) + j.get("a_ground", 0)) / 2
+            sb = (j.get("b_complete", 0) + j.get("b_ground", 0)) / 2
+            scores_a.append(sa); scores_b.append(sb)
+            if j.get("winner") == "A": wins += 1
+            elif j.get("winner") == "B": losses += 1
+            else: ties += 1
+            winner = j.get("winner")
         ret = f" retry={phys.get('retried', False)!s:5s} sim={phys.get('recalled_top1_sim', 0):.2f}" if args.recall else ""
         print(f"  [{qi+1}/{len(qs)}] {q[:44]:44s} dom={phys.get('dominant_domain','?')[:18]:18s} "
-              f"η={phys.get('novelty',0):.2f} T={sa:.1f}v{sb:.1f} → {j.get('winner')}{ret}")
+              f"η={phys.get('novelty',0):.2f} T={sa:.1f}v{sb:.1f} → {winner}{ret}")
 
     # 1b. liveness — NOT corr(novelty,temp) which is tautological (temp is
     # monotone in η by construction). The honest signal is: does the physics
@@ -277,7 +329,7 @@ def main():
 
     res = {
         "t": time.time(), "label": args.label, "worker": args.worker, "judge": args.judge,
-        "raw_seed": args.raw_seed, "raw_temp": args.raw_temp,
+        "raw_seed": args.raw_seed, "raw_temp": args.raw_temp, "isolate": bool(args.isolate),
         "n": n,
         "liveness": {"temp_spread": round(temp_spread, 3),
                      "temp_range": [round(min(temps), 4), round(max(temps), 4)],
