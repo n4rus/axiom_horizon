@@ -25,4 +25,9 @@ fi
 echo "$(date -Is) starting recall bench (L5 falsifiable primitive)" >> "$LOG"
 python3 tools/kai_physics_bench.py --recall --queries 14 --label recall_after_sessions \
     >> "$LOG" 2>&1
-echo "$(date -Is) bench complete, see .kai_physics_bench.jsonl" >> "$LOG"
+echo "$(date -Is) recall bench done" >> "$LOG"
+
+echo "$(date -Is) starting fusion bench (Step 3: 12b tier ceiling)" >> "$LOG"
+python3 tools/kai_physics_bench.py --fuse --queries 14 --label fuse_12b_after_sessions \
+    >> "$LOG" 2>&1
+echo "$(date -Is) fusion bench done, see .kai_physics_bench.jsonl" >> "$LOG"
