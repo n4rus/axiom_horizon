@@ -87,3 +87,4 @@ kai/src/*.restored
 kai/src/*.tmp
 rust/kai-fusion/src/*.restored
 rust/kai-fusion/src/*.tmp
+.kai_sessions_stage/
