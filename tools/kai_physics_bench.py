@@ -91,7 +91,7 @@ def fuse_answer(q: str, port: int, max_tokens: int = 200, teachers: str = "") ->
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/fuse?{params}",
         headers={"Content-Type": "application/json"}, method="GET")
-    with urllib.request.urlopen(req, timeout=240) as r:
+    with urllib.request.urlopen(req, timeout=600) as r:
         d = json.loads(r.read())
     content = (d.get("answer") or "").strip()
     phys = {"temperature": 0.7, "tau": d.get("fused_uncertainty", 0.5),

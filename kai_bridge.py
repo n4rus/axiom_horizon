@@ -964,7 +964,8 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
     # ── Test-time self-recall loop (LAYER 3f / plan #4) ─────────────────
 
     def _refine_once(self, q: str, model: str, top_k: int, temperature: float) -> dict:
-        """Draft → recall → re-answer-if-thin, bounded to ONE retry.
+        """Draft → recall → re-answer, bounded to ONE retry. Actuates on thin
+        drafts (smoke-then-recall) OR strong recall (top1_sim >= 0.70).
         Returns the loop trace so callers can audit the recall delta:
         {answer, retried, draft_thin, recalled_top1_sim, recall_delta, ...}"""
         om = model.split("/", 1)[-1] if "/" in model else model
@@ -982,9 +983,16 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         retried = False
         final = draft
 
-        # Smoke-then-recall: the raw (unaided) answer is thin AND the recalled
-        # memory is meaningful (top-1 sim >= 0.40) → inject context, re-answer.
-        if thin and hits and top1_sim >= 0.40:
+        # Two actuation paths (bounded to ONE retry):
+        #   A. Smoke-then-recall: draft is thin AND memory is meaningful
+        #      (top-1 sim >= 0.40) -> inject context, re-answer.
+        #   B. Grounding-recall: draft is substantive but recall is STRONG
+        #      (top-1 sim >= 0.70). Inject the retrieved memory and re-answer —
+        #      the loop actuates on high-similarity memory, not only on thin
+        #      drafts. Turns passive recall into an active perceive->act loop.
+        inject = (thin and hits and top1_sim >= 0.40) or (
+            not thin and hits and top1_sim >= 0.70)
+        if inject:
             ctx = "[retrieved via test-time self-recall]\n"
             for h in hits[:min(3, len(hits))]:
                 ctx += f"  ({h['similarity']:.2f}) {h['path']}: {h['text'][:220]}\n"
@@ -1016,6 +1024,7 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                 "t": time.time(), "q": q[:200], "model": om,
                 "draft_len": len(draft), "thin_and_retried": retried,
                 "retried": retried, "top1_sim": round(top1_sim, 3),
+                "actuated": "thin" if (thin and retried) else ("grounding" if (not thin and retried) else "none"),
                 "recall_ms": round(recall_time * 1000, 1),
             }
             with open(ledger_path, "a") as f:
