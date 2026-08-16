@@ -46,12 +46,15 @@ QUERIES = [
 ]
 
 # ── Raw path: direct stock ollama, fixed temp, NO physics, NO soul ────────
-def raw_answer(worker: str, q: str, temperature: float = 0.7) -> str:
+def raw_answer(worker: str, q: str, temperature: float = 0.7, seed: int = 0) -> str:
+    # seed pins the raw baseline: without it the raw arm re-samples each run
+    # (temp 0.7) and its mean drifts 3.25->3.54 across runs, making deltas
+    # non-comparable. Ollama + seed is deterministic for the same prompt.
     body = {
         "model": worker,
         "messages": [{"role": "user", "content": q}],
         "stream": False,
-        "options": {"temperature": temperature, "num_predict": 200},
+        "options": {"temperature": temperature, "num_predict": 200, "seed": seed},
     }
     req = urllib.request.Request(
         f"{STOCK}/api/chat", data=json.dumps(body).encode(),
@@ -191,6 +194,10 @@ def main():
                     help="L5 path: closed-loop test-time self-recall (/v1/refine) instead of single physics model")
     ap.add_argument("--teachers", default="",
                     help="comma-sep teacher list for --fuse (default: bridge's FUSION_TEACHERS)")
+    ap.add_argument("--raw-seed", type=int, default=0,
+                    help="seed for the raw baseline answers (0 = default). Pin it "
+                         "across runs so the raw baseline is reproducible and "
+                         "deltas are comparable.")
     args = ap.parse_args()
 
     qs = QUERIES[: args.queries]
@@ -216,7 +223,7 @@ def main():
     retried_total = 0
     for qi, q in enumerate(qs):
         pa, phys = answer_fn(q)
-        ra = raw_answer(args.worker, q)
+        ra = raw_answer(args.worker, q, seed=args.raw_seed)
         novel.append(phys.get("novelty", 0.5)); temps.append(phys.get("temperature", -1)); taus.append(phys.get("tau", -1))
         if args.recall:
             retried_total += 1 if phys.get("retried") else 0
@@ -258,11 +265,16 @@ def main():
         if e_r1 and e_r2: cons_raw.append(cosine(e_r1, e_r2))
         print(f"  [consistency {len(cons_phys)}/{cons_sets}] phys={cons_phys[-1] if cons_phys else 0:.3f} raw={cons_raw[-1] if cons_raw else 0:.3f}")
 
+    # NOTE: quality-path raw answers use args.raw_seed (pinned baseline); the
+    # consistency repeats sample raw fresh (no seed) — c_raw measures raw
+    # sampling variety, c_phys measures the physics arm's stability.
+
     c_phys = sum(cons_phys)/len(cons_phys) if cons_phys else 0.0
     c_raw = sum(cons_raw)/len(cons_raw) if cons_raw else 0.0
 
     res = {
         "t": time.time(), "label": args.label, "worker": args.worker, "judge": args.judge,
+        "raw_seed": args.raw_seed,
         "n": n,
         "liveness": {"temp_spread": round(temp_spread, 3),
                      "temp_range": [round(min(temps), 4), round(max(temps), 4)],
