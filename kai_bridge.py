@@ -803,8 +803,11 @@ class VFEState:
 
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE}/api/chat"
 
-def call_ollama_chat(body: dict) -> dict:
-    """Call Ollama /api/chat with the given body dict. Returns parsed JSON."""
+def call_ollama_chat(body: dict, timeout: float = 120.0) -> dict:
+    """Call Ollama /api/chat with the given body dict. Returns parsed JSON.
+    timeout: per-request HTTP timeout. Cold model loads on the 6GB card can
+    exceed 120s (gemma4:12b ~162s), so fuse teacher calls pass a larger
+    budget; the default stays 120s for the interactive chat path."""
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         OLLAMA_CHAT_URL,
@@ -813,7 +816,7 @@ def call_ollama_chat(body: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
@@ -1055,7 +1058,10 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
     # inverse-variance Kalman-weighted across teachers — the bridge-side mirror
     # of vfe.rs::kalman_fuse_sources. The best-expert answer is returned.
 
-    FUSION_TEACHERS = ["qwen2.5-coder:7b", "qwen2.5-coder:3b", "tinyllama"]
+    # Tier ceiling raised 2026-08-16: swap doubled (2G -> 16G), so the 12b
+    # teacher now fits (4GB VRAM + RAM offload, ~9s warm). Replaces tinyllama
+    # as the weakest teacher. 16b remains OOM-excluded on the 6GB card.
+    FUSION_TEACHERS = ["gemma4:12b", "qwen2.5-coder:7b", "qwen2.5-coder:3b"]
 
     def _teacher_answer(self, om: str, q: str, temperature: float,
                         max_tokens: int) -> dict:
@@ -1086,9 +1092,19 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                 "model": ollama_model, "messages": [{"role": "user", "content": q}],
                 "stream": False,
                 "options": {"temperature": round(eff_temp, 4), "num_predict": max_tokens},
+                # Keep the teacher resident for 5 min: serial 3-teacher dispatch
+                # on the 6GB card otherwise cold-loads (and evicts) each model
+                # per query, ~2-3 min each -> fuse becomes unusably slow.
+                "keep_alive": "5m",
             }
-            resp = call_ollama_chat(body)
-            ans = resp.get("message", {}).get("content", "").strip()
+            resp = call_ollama_chat(body, timeout=300.0)
+            msg = resp.get("message", {}) or {}
+            # Reasoning models (gemma4:12b) put the answer in `thinking` with
+            # empty `content`; prefer content, fall back to thinking.
+            ans = (msg.get("content") or "").strip()
+            if not ans:
+                ans = (msg.get("thinking") or "").strip()
+            ans = ans.strip()
         except Exception as e:
             return {"model": om, "answer": "", "uncertainty": 1.0,
                     "quality": 0.0, "error": str(e)}
