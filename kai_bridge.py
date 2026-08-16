@@ -1002,11 +1002,18 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
             ]
             try:
                 pp = self.physics_params
+                # Grounded re-answer samples COLD: the recalled memory is the
+                # evidence, so the model should exploit it, not explore around
+                # it. Falsified in recall_darwin_stack bench (+0.11): the
+                # darwin base_temperature=1.40 (tuned for the exploratory raw
+                # path) made the grounded re-answer creative-but-imprecise.
+                # Cold grounding: T_eff = min(0.5, darwin base) * tau.
+                grounded_base = min(pp.get("base_temperature", temperature), 0.5)
                 body = {
                     "model": om, "messages": msgs, "stream": False,
                     "options": {
                         "temperature": round(self.vfe_state.compute_temperature(
-                            pp.get("base_temperature", temperature),
+                            grounded_base,
                             pp.get("novelty_scale", 0.30)), 4),
                         "top_p": pp.get("top_p", 0.997),
                         "num_predict": 400,
