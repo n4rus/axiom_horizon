@@ -45,11 +45,12 @@ QUERIES = [
     "photosynthesis carbon fixation",
 ]
 
-# ── Raw path: direct stock ollama, fixed temp, NO physics, NO soul ────────
-def raw_answer(worker: str, q: str, temperature: float = 0.7, seed: int = 0) -> str:
-    # seed pins the raw baseline: without it the raw arm re-samples each run
-    # (temp 0.7) and its mean drifts 3.25->3.54 across runs, making deltas
-    # non-comparable. Ollama + seed is deterministic for the same prompt.
+# ── Raw path: direct stock ollama, greedy (temp 0) NO physics, NO soul ─────
+# temp 0 is the honest pinned baseline: greedy decoding is deterministic
+# ACROSS model reloads (verified), unlike seeded temp>0 which ollama does NOT
+# reproduce after a reload. Earlier seed-only pinning left raw means drifting
+# 3.58 vs 3.75 between identical runs. --raw-temp overrides if needed.
+def raw_answer(worker: str, q: str, temperature: float = 0.0, seed: int = 0) -> str:
     body = {
         "model": worker,
         "messages": [{"role": "user", "content": q}],
@@ -195,9 +196,11 @@ def main():
     ap.add_argument("--teachers", default="",
                     help="comma-sep teacher list for --fuse (default: bridge's FUSION_TEACHERS)")
     ap.add_argument("--raw-seed", type=int, default=0,
-                    help="seed for the raw baseline answers (0 = default). Pin it "
-                         "across runs so the raw baseline is reproducible and "
-                         "deltas are comparable.")
+                    help="seed for the raw baseline answers (default 0)")
+    ap.add_argument("--raw-temp", type=float, default=0.0,
+                    help="temperature for the raw baseline (default 0.0 = greedy, "
+                         "deterministic across model reloads). Keep 0.0 for honest "
+                         "pinned baselines.")
     args = ap.parse_args()
 
     qs = QUERIES[: args.queries]
@@ -211,7 +214,7 @@ def main():
     else:
         phys_label = f"kai/{args.worker}"
         answer_fn = lambda q: physics_answer(args.worker, q, args.port)
-    print(f"==== kai physics bench  label='{args.label}'  physics={phys_label}  judge={args.judge}")
+    print(f"==== kai physics bench  label='{args.label}'  physics={phys_label}  judge={args.judge}  raw(temp={args.raw_temp},seed={args.raw_seed})")
     print(f"     {len(qs)} queries x {args.repeat} repeats x2 paths — this takes minutes\n")
 
     # 1. Liveness + quality
@@ -223,7 +226,7 @@ def main():
     retried_total = 0
     for qi, q in enumerate(qs):
         pa, phys = answer_fn(q)
-        ra = raw_answer(args.worker, q, seed=args.raw_seed)
+        ra = raw_answer(args.worker, q, temperature=args.raw_temp, seed=args.raw_seed)
         novel.append(phys.get("novelty", 0.5)); temps.append(phys.get("temperature", -1)); taus.append(phys.get("tau", -1))
         if args.recall:
             retried_total += 1 if phys.get("retried") else 0
@@ -274,7 +277,7 @@ def main():
 
     res = {
         "t": time.time(), "label": args.label, "worker": args.worker, "judge": args.judge,
-        "raw_seed": args.raw_seed,
+        "raw_seed": args.raw_seed, "raw_temp": args.raw_temp,
         "n": n,
         "liveness": {"temp_spread": round(temp_spread, 3),
                      "temp_range": [round(min(temps), 4), round(max(temps), 4)],
