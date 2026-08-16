@@ -99,6 +99,29 @@ def fuse_answer(q: str, port: int, max_tokens: int = 200, teachers: str = "") ->
             "dominant_domain": f"fusion_routed_{d.get('routed_to','?')}".replace('/', '_')}
     return content, phys
 
+
+# ── L5: closed-loop recall arm — test-time self-recall (falsifiable) ───────
+# The one-sentence AGI bet: a closed perceive→act→perceive loop beats raw
+# prompting on a real task. This arm answers via /v1/refine (draft → recall
+# top-k corpus → inject if thin → re-answer). It can say NO: if the recall
+# arm does NOT beat raw on corpus-grounded queries, the bet is falsified.
+def recall_answer(q: str, port: int, model: str = "qwen2.5-coder:3b",
+                  top_k: int = 3, temperature: float = 0.7) -> tuple:
+    params = urlencode({"q": q, "model": f"kai/{model}", "top_k": top_k,
+                        "temperature": temperature})
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/refine?{params}",
+        headers={"Content-Type": "application/json"}, method="GET")
+    with urllib.request.urlopen(req, timeout=240) as r:
+        d = json.loads(r.read())
+    content = (d.get("answer") or "").strip()
+    phys = {"temperature": temperature,
+            "dominant_domain": "recall",
+            "recalled_top1_sim": d.get("recalled_top1_sim", 0.0),
+            "retried": d.get("retried", False),
+            "draft_thin": d.get("draft_thin", False)}
+    return content, phys
+
 # ── Judge: rate both blinded answers, report scores + winner ──────────────
 def judge(judge_model: str, q: str, a: str, b: str) -> dict:
     prompt = (
@@ -164,13 +187,23 @@ def main():
     ap.add_argument("--label", default="")
     ap.add_argument("--fuse", action="store_true",
                     help="L4 path: use multi-teacher /v1/fuse instead of single physics model")
+    ap.add_argument("--recall", action="store_true",
+                    help="L5 path: closed-loop test-time self-recall (/v1/refine) instead of single physics model")
     ap.add_argument("--teachers", default="",
                     help="comma-sep teacher list for --fuse (default: bridge's FUSION_TEACHERS)")
     args = ap.parse_args()
 
     qs = QUERIES[: args.queries]
-    phys_label = ("fusion(" + args.teachers + ")" if args.fuse and args.teachers
-                  else ("fusion(3-teacher)" if args.fuse else f"kai/{args.worker}"))
+    if args.recall:
+        phys_label = "recall(/v1/refine)"
+        answer_fn = lambda q: recall_answer(q, args.port)
+    elif args.fuse:
+        phys_label = ("fusion(" + args.teachers + ")" if args.teachers
+                      else "fusion(3-teacher)")
+        answer_fn = lambda q: fuse_answer(q, args.port, teachers=args.teachers)
+    else:
+        phys_label = f"kai/{args.worker}"
+        answer_fn = lambda q: physics_answer(args.worker, q, args.port)
     print(f"==== kai physics bench  label='{args.label}'  physics={phys_label}  judge={args.judge}")
     print(f"     {len(qs)} queries x {args.repeat} repeats x2 paths — this takes minutes\n")
 
@@ -180,12 +213,13 @@ def main():
     scores_a, scores_b = [], []
     dev_count = 0  # queries where adapted temp ||deviated|| from the base knob
     base_knob = 0.7
+    retried_total = 0
     for qi, q in enumerate(qs):
-        pa, phys = (fuse_answer(q, args.port, teachers=args.teachers)
-                    if args.fuse
-                    else physics_answer(args.worker, q, args.port))
+        pa, phys = answer_fn(q)
         ra = raw_answer(args.worker, q)
         novel.append(phys.get("novelty", 0.5)); temps.append(phys.get("temperature", -1)); taus.append(phys.get("tau", -1))
+        if args.recall:
+            retried_total += 1 if phys.get("retried") else 0
         if abs(phys.get("temperature", base_knob) - base_knob) >= 0.05:
             dev_count += 1
         j = judge(args.judge, q, pa, ra)
@@ -195,8 +229,9 @@ def main():
         if j.get("winner") == "A": wins += 1
         elif j.get("winner") == "B": losses += 1
         else: ties += 1
+        ret = f" retry={phys.get('retried', False)!s:5s} sim={phys.get('recalled_top1_sim', 0):.2f}" if args.recall else ""
         print(f"  [{qi+1}/{len(qs)}] {q[:44]:44s} dom={phys.get('dominant_domain','?')[:18]:18s} "
-              f"η={phys.get('novelty',0):.2f} T={sa:.1f}v{sb:.1f} → {j.get('winner')}")
+              f"η={phys.get('novelty',0):.2f} T={sa:.1f}v{sb:.1f} → {j.get('winner')}{ret}")
 
     # 1b. liveness — NOT corr(novelty,temp) which is tautological (temp is
     # monotone in η by construction). The honest signal is: does the physics
@@ -213,12 +248,8 @@ def main():
     cons_sets = min(6, n)
     cons_phys, cons_raw = [], []
     for q in qs[:cons_sets]:
-        if args.fuse:
-            p1, _ = fuse_answer(q, args.port, teachers=args.teachers)
-            p2, _ = fuse_answer(q, args.port, teachers=args.teachers)
-        else:
-            p1, _ = physics_answer(args.worker, q, args.port)
-            p2, _ = physics_answer(args.worker, q, args.port)
+        p1, _ = answer_fn(q)
+        p2, _ = answer_fn(q)
         e_p1, e_p2 = embed(p1), embed(p2)
         if e_p1 and e_p2: cons_phys.append(cosine(e_p1, e_p2))
         r1 = raw_answer(args.worker, q)
@@ -238,12 +269,14 @@ def main():
                      "tau_spread": round(tau_spread, 3),
                      "dev_from_base_knob_frac": round(dev_frac, 3),
                      "base_knob": base_knob},
-        "quality": {"wins": wins, "ties": ties, "losses": losses,
-                    "physics_mean_score": round(mean_a, 3), "raw_mean_score": round(mean_b, 3),
-                    "delta": round(mean_a - mean_b, 3)},
-        "consistency": {"physics": round(c_phys, 4), "raw": round(c_raw, 4),
-                        "physics_meets_95": c_phys >= 0.95, "raw_meets_95": c_raw >= 0.95},
+         "quality": {"wins": wins, "ties": ties, "losses": losses,
+                     "physics_mean_score": round(mean_a, 3), "raw_mean_score": round(mean_b, 3),
+                     "delta": round(mean_a - mean_b, 3)},
+         "consistency": {"physics": round(c_phys, 4), "raw": round(c_raw, 4),
+                         "physics_meets_95": c_phys >= 0.95, "raw_meets_95": c_raw >= 0.95},
     }
+    if args.recall:
+        res["recall"] = {"retried_frac": round(retried_total / n, 3) if n else 0.0}
     with open(RECORD, "a") as f:
         f.write(json.dumps(res) + "\n")
 
@@ -256,8 +289,12 @@ def main():
           f"[wins {wins} / ties {ties} / losses {losses}]")
     verdict = "PHYSICS WINS" if (mean_a - mean_b) >= 0.3 else ("RAW WINS" if (mean_b - mean_a) >= 0.3 else "MARGINAL")
     print(f"  QUALITY       verdict: {verdict}")
+    if args.recall:
+        print(f"  RECALL        retried {retried_total}/{n} "
+              f"(frac {retried_total/n:.2f}) — loop actuated this often")
     print(f"  CONSISTENCY   physics {c_phys:.3f} vs raw {c_raw:.3f}  (plan target >0.95)")
     print(f"  -> appended to {RECORD}\n")
+
 
 if __name__ == "__main__":
     main()
