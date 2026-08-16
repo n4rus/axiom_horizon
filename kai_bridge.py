@@ -1001,9 +1001,23 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                 {"role": "user", "content": f"{ctx}\n\nQuestion: {q}"},
             ]
             try:
+                pp = self.physics_params
                 body = {
                     "model": om, "messages": msgs, "stream": False,
-                    "options": {"temperature": temperature, "num_predict": 400},
+                    "options": {
+                        "temperature": round(self.vfe_state.compute_temperature(
+                            pp.get("base_temperature", temperature),
+                            pp.get("novelty_scale", 0.30)), 4),
+                        "top_p": pp.get("top_p", 0.997),
+                        "num_predict": 400,
+                        "kai_vfe": True,
+                        "kai_tau": self.vfe_state.tau,
+                        "kai_novelty_scale": pp.get("novelty_scale", 0.30),
+                        "kai_vfe_tau_rate": pp.get("vfe_tau_rate", 0.061),
+                        "kai_tau_min": pp.get("tau_min", 0.855),
+                        "kai_tau_max": pp.get("tau_max", 1.657),
+                        "kai_attractor_path": "/tmp/kai_data/attractor.bin",
+                    },
                 }
                 resp = call_ollama_chat(body)
                 r = resp.get("message", {}).get("content", "").strip()
@@ -1044,17 +1058,40 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
 
     def _llm_once(self, model: str, q: str, temperature: float) -> str:
         """One unstreamed LLM call for a single question, with a short answer
-        budget and a fail-fast timeout. Returns stripped text."""
+        budget and a fail-fast timeout. Returns stripped text.
+
+        Physics-wired: applies the live darwin-promoted params (base_temperature,
+        novelty_scale, top_p, tau band) exactly like the chat path, so the
+        refine/recall loop stacks the darwin lever on top of the recall lever."""
         om = model.split("/", 1)[-1] if "/" in model else model
         try:
+            pp = self.physics_params
+            novelty = self.vfe_state.compute_novelty(q)
+            adapted_temp = self.vfe_state.compute_temperature(
+                pp.get("base_temperature", temperature), pp.get("novelty_scale", 0.30))
             body = {
                 "model": om,
                 "messages": [{"role": "user", "content": q}],
                 "stream": False,
-                "options": {"temperature": temperature, "num_predict": 300},
+                "options": {
+                    "temperature": round(adapted_temp, 4),
+                    "top_p": pp.get("top_p", 0.997),
+                    "num_predict": 300,
+                    "kai_vfe": True,
+                    "kai_tau": self.vfe_state.tau,
+                    "kai_novelty_scale": pp.get("novelty_scale", 0.30),
+                    "kai_vfe_tau_rate": pp.get("vfe_tau_rate", 0.061),
+                    "kai_tau_min": pp.get("tau_min", 0.855),
+                    "kai_tau_max": pp.get("tau_max", 1.657),
+                    "kai_attractor_path": "/tmp/kai_data/attractor.bin",
+                },
             }
             resp = call_ollama_chat(body)
-            return resp.get("message", {}).get("content", "").strip()
+            msg = resp.get("message", {}) or {}
+            ans = (msg.get("content") or "").strip()
+            if not ans:
+                ans = (msg.get("thinking") or "").strip()
+            return ans.strip()
         except Exception:
             return ""
 
