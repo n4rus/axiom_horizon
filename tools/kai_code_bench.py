@@ -161,6 +161,249 @@ TASKS = [
             "assert gcd(1071, 462) == 21\n"
         ),
     },
+    {
+        "name": "reverse_words",
+        "prompt": ("Write a Python function reverse_words(s) that returns s with "
+                   "the order of words reversed, preserving single spaces between "
+                   "words (strip leading/trailing spaces)."),
+        "tests": (
+            "assert reverse_words('the sky is blue') == 'blue is sky the'\n"
+            "assert reverse_words('  hello world  ') == 'world hello'\n"
+            "assert reverse_words('a') == 'a'\n"
+            "assert reverse_words('') == ''\n"
+            "assert reverse_words('two words') == 'words two'\n"
+        ),
+    },
+    {
+        "name": "max_subarray",
+        "prompt": ("Write a Python function max_subarray(nums) that returns the "
+                   "maximum sum of a contiguous subarray (Kadane's algorithm)."),
+        "tests": (
+            "assert max_subarray([-2,1,-3,4,-1,2,1,-5,4]) == 6\n"
+            "assert max_subarray([1]) == 1\n"
+            "assert max_subarray([-1,-2,-3]) == -1\n"
+            "assert max_subarray([5,4,-1,7,8]) == 23\n"
+            "assert max_subarray([-2,-1]) == -1\n"
+        ),
+    },
+    {
+        "name": "longest_common_prefix",
+        "prompt": ("Write a Python function longest_common_prefix(strs) that "
+                   "returns the longest common prefix string of a list of strings, "
+                   "or '' if none."),
+        "tests": (
+            "assert longest_common_prefix(['flower','flow','flight']) == 'fl'\n"
+            "assert longest_common_prefix(['dog','racecar','car']) == ''\n"
+            "assert longest_common_prefix(['a']) == 'a'\n"
+            "assert longest_common_prefix([]) == ''\n"
+            "assert longest_common_prefix(['interspecies','interstellar','interstate']) == 'inters'\n"
+        ),
+    },
+    {
+        "name": "find_missing",
+        "prompt": ("Write a Python function find_missing(nums) that takes a list "
+                   "of n distinct numbers in [0,n] and returns the one missing "
+                   "number (range has n+1 values)."),
+        "tests": (
+            "assert find_missing([3,0,1]) == 2\n"
+            "assert find_missing([0,1]) == 2\n"
+            "assert find_missing([9,6,4,2,3,5,7,0,1]) == 8\n"
+            "assert find_missing([0]) == 1\n"
+            "assert find_missing([1]) == 0\n"
+        ),
+    },
+    {
+        "name": "is_anagram",
+        "prompt": ("Write a Python function is_anagram(a, b) that returns True "
+                   "if a and b are anagrams (same letters, any order), "
+                   "case-insensitive, ignoring spaces."),
+        "tests": (
+            "assert is_anagram('listen', 'silent') == True\n"
+            "assert is_anagram('anagram', 'nagaram') == True\n"
+            "assert is_anagram('rat', 'car') == False\n"
+            "assert is_anagram('Hello World', 'World Hello') == True\n"
+            "assert is_anagram('', '') == True\n"
+        ),
+    },
+    {
+        "name": "remove_duplicates",
+        "prompt": ("Write a Python function remove_duplicates(nums) that takes a "
+                   "SORTED list and returns the list with duplicates removed, "
+                   "preserving order."),
+        "tests": (
+            "assert remove_duplicates([1,1,2]) == [1,2]\n"
+            "assert remove_duplicates([0,0,1,1,1,2,2,3,3,4]) == [0,1,2,3,4]\n"
+            "assert remove_duplicates([]) == []\n"
+            "assert remove_duplicates([1,2,3]) == [1,2,3]\n"
+            "assert remove_duplicates([5,5,5,5]) == [5]\n"
+        ),
+    },
+    {
+        "name": "sqrt_int",
+        "prompt": ("Write a Python function sqrt_int(x) that returns the integer "
+                   "square root of a non-negative integer x (floor of sqrt), "
+                   "without importing math."),
+        "tests": (
+            "assert sqrt_int(8) == 2\n"
+            "assert sqrt_int(9) == 3\n"
+            "assert sqrt_int(0) == 0\n"
+            "assert sqrt_int(1) == 1\n"
+            "assert sqrt_int(2147395599) == 46339\n"
+        ),
+    },
+    {
+        "name": "is_power_of_two",
+        "prompt": ("Write a Python function is_power_of_two(n) that returns True "
+                   "if n is a power of two, else False."),
+        "tests": (
+            "assert is_power_of_two(1) == True\n"
+            "assert is_power_of_two(16) == True\n"
+            "assert is_power_of_two(3) == False\n"
+            "assert is_power_of_two(0) == False\n"
+            "assert is_power_of_two(1024) == True\n"
+        ),
+    },
+    {
+        "name": "next_greater",
+        "prompt": ("Write a Python function next_greater(nums) that returns a "
+                   "list where each element is the next element to the right that "
+                   "is strictly greater, or -1 if none."),
+        "tests": (
+            "assert next_greater([4,5,2,25]) == [5,25,25,-1]\n"
+            "assert next_greater([2,1,2,4,3]) == [4,2,4,-1,-1]\n"
+            "assert next_greater([1,2,3]) == [2,3,-1]\n"
+            "assert next_greater([3,2,1]) == [-1,-1,-1]\n"
+            "assert next_greater([]) == []\n"
+        ),
+    },
+    {
+        "name": "factorial",
+        "prompt": ("Write a Python function factorial(n) that returns n! for "
+                   "n >= 0 (0! = 1)."),
+        "tests": (
+            "assert factorial(0) == 1\n"
+            "assert factorial(1) == 1\n"
+            "assert factorial(5) == 120\n"
+            "assert factorial(10) == 3628800\n"
+            "assert factorial(7) == 5040\n"
+        ),
+    },
+    {
+        "name": "count_words",
+        "prompt": ("Write a Python function count_words(s) that returns the "
+                   "number of words in a string (words separated by any amount "
+                   "of whitespace)."),
+        "tests": (
+            "assert count_words('hello world') == 2\n"
+            "assert count_words('  a   b  c ') == 3\n"
+            "assert count_words('') == 0\n"
+            "assert count_words('single') == 1\n"
+            "assert count_words('one two three four five') == 5\n"
+        ),
+    },
+    {
+        "name": "rotate_list",
+        "prompt": ("Write a Python function rotate_list(nums, k) that rotates "
+                   "the list to the right by k steps (k can be larger than "
+                   "len(nums)). Return the rotated list."),
+        "tests": (
+            "assert rotate_list([1,2,3,4,5,6,7], 3) == [5,6,7,1,2,3,4]\n"
+            "assert rotate_list([-1,-100,3,99], 2) == [3,99,-1,-100]\n"
+            "assert rotate_list([1,2,3], 4) == [3,1,2]\n"
+            "assert rotate_list([1], 0) == [1]\n"
+            "assert rotate_list([1,2,3,4], 8) == [1,2,3,4]\n"
+        ),
+    },
+    {
+        "name": "majority_element",
+        "prompt": ("Write a Python function majority_element(nums) that returns "
+                   "the element appearing more than len(nums)//2 times (guaranteed "
+                   "to exist)."),
+        "tests": (
+            "assert majority_element([3,2,3]) == 3\n"
+            "assert majority_element([2,2,1,1,1,2,2]) == 2\n"
+            "assert majority_element([1]) == 1\n"
+            "assert majority_element([5,5,5,1,5]) == 5\n"
+            "assert majority_element([9,9,9,9,8,8]) == 9\n"
+        ),
+    },
+    {
+        "name": "sum_digits",
+        "prompt": ("Write a Python function sum_digits(n) that returns the sum "
+                   "of the digits of a non-negative integer n."),
+        "tests": (
+            "assert sum_digits(123) == 6\n"
+            "assert sum_digits(0) == 0\n"
+            "assert sum_digits(999) == 27\n"
+            "assert sum_digits(102030) == 6\n"
+            "assert sum_digits(7) == 7\n"
+        ),
+    },
+    {
+        "name": "first_uniq_char",
+        "prompt": ("Write a Python function first_uniq_char(s) that returns the "
+                   "index of the first non-repeating character in s, or -1 if "
+                   "none."),
+        "tests": (
+            "assert first_uniq_char('leetcode') == 0\n"
+            "assert first_uniq_char('loveleetcode') == 2\n"
+            "assert first_uniq_char('aabb') == -1\n"
+            "assert first_uniq_char('') == -1\n"
+            "assert first_uniq_char('a') == 0\n"
+        ),
+    },
+    {
+        "name": "min_cost_stairs",
+        "prompt": ("Write a Python function min_cost_stairs(cost) that takes a "
+                   "list where cost[i] is the cost of step i. You can start at "
+                   "step 0 or 1 and climb 1 or 2 steps. Return the minimum cost "
+                   "to reach the top (one past the last step)."),
+        "tests": (
+            "assert min_cost_stairs([10,15,20]) == 15\n"
+            "assert min_cost_stairs([1,100,1,1,1,100,1,1,100,1]) == 6\n"
+            "assert min_cost_stairs([0,0,0,0]) == 0\n"
+            "assert min_cost_stairs([5,10]) == 5\n"
+        ),
+    },
+    {
+        "name": "valid_parentheses",
+        "prompt": ("Write a Python function valid_parentheses(s) that returns "
+                   "True if the string has balanced parentheses '()' (no other "
+                   "bracket types), else False."),
+        "tests": (
+            "assert valid_parentheses('()') == True\n"
+            "assert valid_parentheses('()()') == True\n"
+            "assert valid_parentheses('(())') == True\n"
+            "assert valid_parentheses('())') == False\n"
+            "assert valid_parentheses(')(') == False\n"
+            "assert valid_parentheses('') == True\n"
+        ),
+    },
+    {
+        "name": "merge_sorted",
+        "prompt": ("Write a Python function merge_sorted(a, b) that takes two "
+                   "sorted lists and returns one sorted merged list."),
+        "tests": (
+            "assert merge_sorted([1,2,3], [2,5,6]) == [1,2,2,3,5,6]\n"
+            "assert merge_sorted([], [1]) == [1]\n"
+            "assert merge_sorted([1,3,5], []) == [1,3,5]\n"
+            "assert merge_sorted([], []) == []\n"
+            "assert merge_sorted([1,2],[3,4,5,6]) == [1,2,3,4,5,6]\n"
+        ),
+    },
+    {
+        "name": "climbing_stairs",
+        "prompt": ("Write a Python function climbing_stairs(n) that returns the "
+                   "number of distinct ways to climb n stairs taking 1 or 2 "
+                   "steps at a time."),
+        "tests": (
+            "assert climbing_stairs(2) == 2\n"
+            "assert climbing_stairs(3) == 3\n"
+            "assert climbing_stairs(4) == 5\n"
+            "assert climbing_stairs(5) == 8\n"
+            "assert climbing_stairs(1) == 1\n"
+        ),
+    },
 ]
 
 K_DEFAULT = 4
