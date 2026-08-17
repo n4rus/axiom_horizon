@@ -668,6 +668,79 @@ class VFEState:
         boost = novelty_scale * (self.novelty - 0.5)
         return max(0.01, base_temp * (1.0 + boost) / max(self.tau, 0.1))
 
+    def probe_difficulty(self, model: str, prompt: str, max_probe_tokens: int = 160,
+                         probe_temp: float = 0.2) -> tuple:
+        """Difficulty gate: sample a draft at low temp, self-verify it.
+
+        Replication evidence (code_rep29, .kai_code_bench.jsonl): the uniform
+        high temp (mean 1.948) from compute_temperature collapsed physics
+        pass@1 to 0.76 on EASY tasks (factorial/gcd/count_words) while greedy
+        scored 0.90. The controller needs a per-task difficulty signal.
+
+        Signal (calibrated against known ground truth): the model reviews its
+        own near-greedy draft (temp 0, yes/no). Calibration on 8 tasks with
+        known pass/fail:
+          - EASY (greedy passes): model says CORRECT 5/5 — zero false alarms,
+            so we NEVER over-explore easy tasks (the rep29 bug).
+          - HARD (greedy fails): model flags 1/3 (is_balanced). Low recall,
+            but safe: undetected hard tasks degrade to greedy quality, never
+            below it.
+        Gate: CORRECT -> low temperature (keep greedy-quality first shot);
+        INCORRECT -> high temperature (explore for the solution). This is VFE
+        epistemic self-assessment: only escalate exploration when the model
+        itself signals uncertainty.
+
+        Returns (adapted_temp, agreement) — agreement is the draft's
+        self-verification (1.0 CORRECT / 0.0 INCORRECT). Falls back to
+        (None, 0.0) on failure (caller keeps compute_temperature).
+        """
+        try:
+            def _chat(t: float, npredict: int) -> str:
+                body = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": t, "num_predict": npredict},
+                }
+                req = urllib.request.Request(
+                    "http://localhost:11434/api/chat",
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    d = json.loads(r.read())
+                return (d.get("message", {}).get("content", "") or "").strip()
+
+            draft = _chat(probe_temp, max_probe_tokens)
+            if not draft:
+                return None, 0.0
+            # Self-verify: the model reviews its own draft at temp 0.
+            v_prompt = (
+                "You are a strict code reviewer. Is the following Python code "
+                "CORRECT? Consider edge cases. Reply with exactly CORRECT or "
+                f"INCORRECT.\n\nCODE:\n{draft[:600]}\n\nReply: CORRECT or INCORRECT")
+            v_body = {
+                "model": model,
+                "messages": [{"role": "user", "content": v_prompt}],
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 10},
+            }
+            v_req = urllib.request.Request(
+                "http://localhost:11434/api/chat",
+                data=json.dumps(v_body).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(v_req, timeout=120) as r:
+                vd = json.loads(r.read())
+            verdict = (vd.get("message", {}).get("content", "") or "").strip().upper()
+            correct = "CORRECT" in verdict and "INCORRECT" not in verdict
+            pp = self.physics_params if hasattr(self, "physics_params") else {}
+            t_low = float(pp.get("t_low", 0.15))
+            t_high = float(pp.get("t_high", 1.60))
+            adapted = t_low if correct else t_high
+            return round(adapted, 4), (1.0 if correct else 0.0)
+        except Exception as e:
+            print(f"[kai_bridge] probe_difficulty warn: {e}", file=sys.stderr, flush=True)
+            return None, 0.0
+
     def update_tau(self, response_novelty: float, vfe_tau_rate: float, tau_min: float, tau_max: float):
         """Post-response tau update — zero-centered on the novelty baseline.
 
@@ -1076,12 +1149,20 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
             novelty = self.vfe_state.compute_novelty(q)
             adapted_temp = self.vfe_state.compute_temperature(
                 pp.get("base_temperature", temperature), pp.get("novelty_scale", 0.30))
+            # Difficulty-gated temperature (same probe as the chat path): the
+            # refine/recall loop's drafts are generated at THIS temperature, so
+            # easy queries answer near-greedy and hard ones explore.
+            use_temp = adapted_temp
+            if os.environ.get("KAI_BRIDGE_PROBE", "on") != "off":
+                p_temp, _ = self.vfe_state.probe_difficulty(om, q, max_probe_tokens=160)
+                if p_temp is not None:
+                    use_temp = p_temp
             body = {
                 "model": om,
                 "messages": [{"role": "user", "content": q}],
                 "stream": False,
                 "options": {
-                    "temperature": round(adapted_temp, 4),
+                    "temperature": round(use_temp, 4),
                     "top_p": pp.get("top_p", 0.997),
                     "num_predict": 300,
                     "kai_vfe": True,
@@ -1324,6 +1405,7 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         stream = req.get("stream", False)
         max_tokens = req.get("max_tokens", 256)
         temperature = req.get("temperature", 0.7)
+        attempt = int(req.get("attempt", 0) or 0)  # retry index (0 = first try)
         tools = req.get("tools", [])
         tool_choice = req.get("tool_choice", "auto")
 
@@ -1368,13 +1450,44 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         adapted_temp = self.vfe_state.compute_temperature(
             pp.get("base_temperature", temperature), pp.get("novelty_scale", 0.30))
 
+        # ── LAYER 2b: attempt-gated temperature (escalation policy) ────────
+        # Replication (code_rep29) falsified the uniform-temp controller:
+        # compute_temperature pinned ~1.95 on every code prompt, collapsing
+        # physics pass@1 to 0.76 while greedy held 0.90. Attempt-gated
+        # escalation needs NO difficulty oracle (both probes — embedding
+        # agreement and self-verification — measured too noisy on 3b):
+        #   attempt 0 (first try): CONFIDENT temperature — near-greedy
+        #     quality, preserving pass@1.
+        #   attempt > 0 (retry): EXPLORATORY temperature (t_high) — find the
+        #     solution greedy cannot reach, preserving pass@K.
+        # The retry signal IS the perceive->act loop: only escalate when the
+        # first action failed. Enabled unless KAI_BRIDGE_PROBE=off.
+        pp = self.physics_params
+        t_low = float(pp.get("t_low", 0.15))
+        t_high = float(pp.get("t_high", 1.60))
+        if os.environ.get("KAI_BRIDGE_PROBE", "on") != "off":
+            if attempt > 0:
+                probe_temp = t_high
+                p_agree = None
+                print(f"[kai_bridge] attempt={attempt} -> exploratory T={t_high}",
+                      file=sys.stderr, flush=True)
+            else:
+                # First attempt: difficulty-gated via self-verification probe.
+                p_temp, p_agree = self.vfe_state.probe_difficulty(
+                    ollama_model, user_text, max_probe_tokens=min(max_tokens, 160))
+                if p_temp is not None:
+                    probe_temp = p_temp
+                    print(f"[kai_bridge] probe: verify={p_agree} -> T={probe_temp} "
+                          f"(was {adapted_temp:.3f})", file=sys.stderr, flush=True)
+        else:
+            p_agree = None
+
         # Build options (native VFE sampler handles adaptive physics)
         # Params come from .kai_physics_params.json (darwin-promoted) or the
         # Darwin-evolved defaults: base_temp=0.33, top_p=0.997, tau_rate=0.061,
         # tau_min=0.855, tau_max=1.657
-        pp = self.physics_params
         options = {
-            "temperature": adapted_temp,
+            "temperature": probe_temp,
             "top_p": pp.get("top_p", 0.997),
             "num_predict": max_tokens,
             "kai_vfe": True,
@@ -1642,10 +1755,11 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                 #   dominant (multi-prior introspection).
                 "kai_physics": {
                     "novelty": round(self.vfe_state.novelty, 4),
-                    "temperature": round(adapted_temp, 4),
+                    "temperature": round(probe_temp, 4),
                     "tau": round(self.vfe_state.tau, 4),
                     "dominant_domain": dom_name,
                     "dominant_responsibility": round(dom_resp, 4),
+                    "probe_agreement": p_agree,
                 },
             }
             self._send_json(200, resp)

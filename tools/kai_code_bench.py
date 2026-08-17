@@ -425,13 +425,14 @@ def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str
     return d.get("message", {}).get("content", "").strip()
 
 
-def _bridge_chat(q: str, max_tokens: int, port: int) -> tuple:
+def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0) -> tuple:
     body = {
         "model": "kai/qwen2.5-coder:3b",
         "messages": [{"role": "user", "content": q}],
         "stream": False,
         "max_tokens": max_tokens,
         "temperature": 0.7,  # base knob; bridge's VFE controller adapts it
+        "attempt": attempt,  # 0 = first try (confident), >0 = retry (explore)
     }
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -492,7 +493,7 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int) -> dict:
                 ans = _ollama_chat("qwen2.5-coder:3b", q, 0.7, MAX_TOKENS)
                 temp_used = 0.7
             else:  # physics
-                ans, phys = _bridge_chat(q, MAX_TOKENS, port)
+                ans, phys = _bridge_chat(q, MAX_TOKENS, port, attempt=attempt)
                 temp_used = phys.get("temperature", 0.7)
             task_temps.append(temp_used)
             passed, err = run_tests(extract_code(ans), task["tests"])
