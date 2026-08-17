@@ -256,6 +256,8 @@ def main():
     novel, temps, taus = [], [], []
     wins, ties, losses = 0, 0, 0
     scores_a, scores_b = [], []
+    dims_a = {"complete": [], "ground": []}  # isolated per-dimension (physics)
+    dims_b = {"complete": [], "ground": []}  # isolated per-dimension (raw baseline)
     dev_count = 0  # queries where adapted temp ||deviated|| from the base knob
     base_knob = 0.7
     retried_total = 0
@@ -271,10 +273,14 @@ def main():
             # Rate physics in isolation vs rubric; reuse cached raw baseline.
             jp = judge_isolated(args.judge, q, pa)
             sa = (jp.get("complete", 0) + jp.get("ground", 0)) / 2
+            dims_a["complete"].append(jp.get("complete", 0))
+            dims_a["ground"].append(jp.get("ground", 0))
             if q not in raw_cache:
                 ra = raw_answer(args.worker, q, temperature=args.raw_temp, seed=args.raw_seed)
                 jr = judge_isolated(args.judge, q, ra)
                 raw_cache[q] = (jr.get("complete", 0) + jr.get("ground", 0)) / 2
+                dims_b["complete"].append(jr.get("complete", 0))
+                dims_b["ground"].append(jr.get("ground", 0))
             sb = raw_cache[q]
             scores_a.append(sa); scores_b.append(sb)
             wins += 1 if sa > sb else 0
@@ -344,6 +350,13 @@ def main():
     }
     if args.recall:
         res["recall"] = {"retried_frac": round(retried_total / n, 3) if n else 0.0}
+    if args.isolate and dims_a["complete"]:
+        res["dims"] = {
+            "physics_complete": round(sum(dims_a["complete"]) / len(dims_a["complete"]), 3),
+            "physics_ground": round(sum(dims_a["ground"]) / len(dims_a["ground"]), 3),
+            "raw_complete": round(sum(dims_b["complete"]) / len(dims_b["complete"]), 3),
+            "raw_ground": round(sum(dims_b["ground"]) / len(dims_b["ground"]), 3),
+        }
     with open(RECORD, "a") as f:
         f.write(json.dumps(res) + "\n")
 
@@ -354,6 +367,10 @@ def main():
           f"(tau>0.05 movement = controller actually reacts across queries)")
     print(f"  QUALITY       physics {mean_a:.2f} vs raw {mean_b:.2f}  delta {mean_a-mean_b:+.2f}  "
           f"[wins {wins} / ties {ties} / losses {losses}]")
+    if args.isolate and res.get("dims"):
+        d = res["dims"]
+        print(f"  DIMS          physics complete {d['physics_complete']:.2f} ground {d['physics_ground']:.2f} | "
+              f"raw complete {d['raw_complete']:.2f} ground {d['raw_ground']:.2f}")
     verdict = "PHYSICS WINS" if (mean_a - mean_b) >= 0.3 else ("RAW WINS" if (mean_b - mean_a) >= 0.3 else "MARGINAL")
     print(f"  QUALITY       verdict: {verdict}")
     if args.recall:
