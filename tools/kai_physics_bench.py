@@ -165,15 +165,36 @@ def judge(judge_model: str, q: str, a: str, b: str) -> dict:
 # despite identical raw answers). Isolated judging fixes the baseline: raw
 # answers are rated once vs a rubric and cached; physics answers are rated
 # the same way; delta = physics - fixed_raw. Honest, reproducible baseline.
-def judge_isolated(judge_model: str, q: str, answer: str) -> dict:
-    prompt = (
-        "You are an impartial evaluation judge. Rate this answer on factual "
-        "completeness (1-5) and groundedness/relevance to the question (1-5). "
-        "Be strict; prefer correct, specific, on-topic content over padding.\n\n"
-        f"QUESTION: {q}\n\n"
-        f"ANSWER:\n{answer[:800]}\n\n"
-        "Reply ONLY as JSON: {\"complete\":N,\"ground\":N}\n"
-    )
+#
+# insight=True adds a THIRD dimension: the physics stack's actual claim is
+# exploration yielding correct, non-obvious information. The 2-dim ruler
+# (complete+ground) rewards precision and punishes exploration — all arms
+# went negative on it. The insight dimension (1-5) scores specific correct
+# facts beyond boilerplate and penalizes padding/incorrect claims.
+def judge_isolated(judge_model: str, q: str, answer: str, insight: bool = False) -> dict:
+    if insight:
+        prompt = (
+            "You are an impartial evaluation judge. Rate this answer on three "
+            "dimensions (1-5 each):\n"
+            "- complete: factual completeness\n"
+            "- ground: groundedness/relevance to the question\n"
+            "- insight: how much correct, specific, non-obvious information it "
+            "provides beyond generic boilerplate. Reward concrete correct facts; "
+            "penalize padding, vagueness, and incorrect claims.\n"
+            "Be strict.\n\n"
+            f"QUESTION: {q}\n\n"
+            f"ANSWER:\n{answer[:800]}\n\n"
+            'Reply ONLY as JSON: {"complete":N,"ground":N,"insight":N}\n'
+        )
+    else:
+        prompt = (
+            "You are an impartial evaluation judge. Rate this answer on factual "
+            "completeness (1-5) and groundedness/relevance to the question (1-5). "
+            "Be strict; prefer correct, specific, on-topic content over padding.\n\n"
+            f"QUESTION: {q}\n\n"
+            f"ANSWER:\n{answer[:800]}\n\n"
+            "Reply ONLY as JSON: {\"complete\":N,\"ground\":N}\n"
+        )
     body = {"model": judge_model, "messages": [{"role": "user", "content": prompt}],
             "stream": False, "options": {"temperature": 0.0, "num_predict": 60}}
     req = urllib.request.Request(f"{STOCK}/api/chat", data=json.dumps(body).encode(),
@@ -236,6 +257,11 @@ def main():
                          "baseline judged once per query and cached, physics rated "
                          "same way. Removes the paired-judge contrast effect that "
                          "drifts raw scores 3.58->3.92 across identical runs.")
+    ap.add_argument("--insight", action="store_true",
+                    help="with --isolate, add an 'insight' dimension (1-5): correct, "
+                         "specific, non-obvious info beyond boilerplate. The 2-dim "
+                         "ruler punishes exploration; this tests the physics stack's "
+                         "actual claim. Score = mean(complete, ground, insight).")
     args = ap.parse_args()
 
     qs = QUERIES[: args.queries]
@@ -256,8 +282,8 @@ def main():
     novel, temps, taus = [], [], []
     wins, ties, losses = 0, 0, 0
     scores_a, scores_b = [], []
-    dims_a = {"complete": [], "ground": []}  # isolated per-dimension (physics)
-    dims_b = {"complete": [], "ground": []}  # isolated per-dimension (raw baseline)
+    dims_a = {"complete": [], "ground": [], "insight": []}  # isolated per-dimension (physics)
+    dims_b = {"complete": [], "ground": [], "insight": []}  # isolated per-dimension (raw baseline)
     dev_count = 0  # queries where adapted temp ||deviated|| from the base knob
     base_knob = 0.7
     retried_total = 0
@@ -271,16 +297,25 @@ def main():
             dev_count += 1
         if args.isolate:
             # Rate physics in isolation vs rubric; reuse cached raw baseline.
-            jp = judge_isolated(args.judge, q, pa)
+            jp = judge_isolated(args.judge, q, pa, insight=args.insight)
             sa = (jp.get("complete", 0) + jp.get("ground", 0)) / 2
+            if args.insight:
+                sa = (jp.get("complete", 0) + jp.get("ground", 0) + jp.get("insight", 0)) / 3
             dims_a["complete"].append(jp.get("complete", 0))
             dims_a["ground"].append(jp.get("ground", 0))
+            if args.insight:
+                dims_a["insight"].append(jp.get("insight", 0))
             if q not in raw_cache:
                 ra = raw_answer(args.worker, q, temperature=args.raw_temp, seed=args.raw_seed)
-                jr = judge_isolated(args.judge, q, ra)
-                raw_cache[q] = (jr.get("complete", 0) + jr.get("ground", 0)) / 2
+                jr = judge_isolated(args.judge, q, ra, insight=args.insight)
+                sbv = (jr.get("complete", 0) + jr.get("ground", 0)) / 2
+                if args.insight:
+                    sbv = (jr.get("complete", 0) + jr.get("ground", 0) + jr.get("insight", 0)) / 3
+                raw_cache[q] = sbv
                 dims_b["complete"].append(jr.get("complete", 0))
                 dims_b["ground"].append(jr.get("ground", 0))
+                if args.insight:
+                    dims_b["insight"].append(jr.get("insight", 0))
             sb = raw_cache[q]
             scores_a.append(sa); scores_b.append(sb)
             wins += 1 if sa > sb else 0
@@ -336,6 +371,7 @@ def main():
     res = {
         "t": time.time(), "label": args.label, "worker": args.worker, "judge": args.judge,
         "raw_seed": args.raw_seed, "raw_temp": args.raw_temp, "isolate": bool(args.isolate),
+        "insight": bool(args.insight),
         "n": n,
         "liveness": {"temp_spread": round(temp_spread, 3),
                      "temp_range": [round(min(temps), 4), round(max(temps), 4)],
@@ -357,6 +393,9 @@ def main():
             "raw_complete": round(sum(dims_b["complete"]) / len(dims_b["complete"]), 3),
             "raw_ground": round(sum(dims_b["ground"]) / len(dims_b["ground"]), 3),
         }
+        if args.insight:
+            res["dims"]["physics_insight"] = round(sum(dims_a["insight"]) / len(dims_a["insight"]), 3)
+            res["dims"]["raw_insight"] = round(sum(dims_b["insight"]) / len(dims_b["insight"]), 3)
     with open(RECORD, "a") as f:
         f.write(json.dumps(res) + "\n")
 
@@ -369,7 +408,9 @@ def main():
           f"[wins {wins} / ties {ties} / losses {losses}]")
     if args.isolate and res.get("dims"):
         d = res["dims"]
-        print(f"  DIMS          physics complete {d['physics_complete']:.2f} ground {d['physics_ground']:.2f} | "
+        extra = f" insight {d.get('physics_insight','-')}/{d.get('raw_insight','-')}" if args.insight else ""
+        print(f"  DIMS          physics complete {d['physics_complete']:.2f} ground {d['physics_ground']:.2f}"
+              f"{extra} | "
               f"raw complete {d['raw_complete']:.2f} ground {d['raw_ground']:.2f}")
     verdict = "PHYSICS WINS" if (mean_a - mean_b) >= 0.3 else ("RAW WINS" if (mean_b - mean_a) >= 0.3 else "MARGINAL")
     print(f"  QUALITY       verdict: {verdict}")
