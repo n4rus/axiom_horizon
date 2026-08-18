@@ -1456,31 +1456,30 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         # physics pass@1 to 0.76 while greedy held 0.90. Attempt-gated
         # escalation needs NO difficulty oracle (both probes — embedding
         # agreement and self-verification — measured too noisy on 3b):
-        #   attempt 0 (first try): CONFIDENT temperature — near-greedy
+        #   attempt 0 (first try): CONFIDENT temperature (t_low) — near-greedy
         #     quality, preserving pass@1.
         #   attempt > 0 (retry): EXPLORATORY temperature (t_high) — find the
         #     solution greedy cannot reach, preserving pass@K.
         # The retry signal IS the perceive->act loop: only escalate when the
-        # first action failed. Enabled unless KAI_BRIDGE_PROBE=off.
+        # first action failed. KAI_BRIDGE_PROBE=on re-enables the optional
+        # attempt-0 self-verification probe (measured unreliable, default off).
         pp = self.physics_params
         t_low = float(pp.get("t_low", 0.15))
         t_high = float(pp.get("t_high", 1.60))
-        if os.environ.get("KAI_BRIDGE_PROBE", "on") != "off":
-            if attempt > 0:
-                probe_temp = t_high
-                p_agree = None
-                print(f"[kai_bridge] attempt={attempt} -> exploratory T={t_high}",
-                      file=sys.stderr, flush=True)
-            else:
-                # First attempt: difficulty-gated via self-verification probe.
-                p_temp, p_agree = self.vfe_state.probe_difficulty(
-                    ollama_model, user_text, max_probe_tokens=min(max_tokens, 160))
-                if p_temp is not None:
-                    probe_temp = p_temp
-                    print(f"[kai_bridge] probe: verify={p_agree} -> T={probe_temp} "
-                          f"(was {adapted_temp:.3f})", file=sys.stderr, flush=True)
+        p_agree = None
+        if attempt > 0:
+            probe_temp = t_high
+            print(f"[kai_bridge] attempt={attempt} -> exploratory T={t_high}",
+                  file=sys.stderr, flush=True)
+        elif os.environ.get("KAI_BRIDGE_PROBE", "off") == "on":
+            p_temp, p_agree = self.vfe_state.probe_difficulty(
+                ollama_model, user_text, max_probe_tokens=min(max_tokens, 160))
+            if p_temp is not None:
+                probe_temp = p_temp
+                print(f"[kai_bridge] probe: verify={p_agree} -> T={probe_temp} "
+                      f"(was {adapted_temp:.3f})", file=sys.stderr, flush=True)
         else:
-            p_agree = None
+            probe_temp = t_low  # attempt 0, probe off: confident first try
 
         # Build options (native VFE sampler handles adaptive physics)
         # Params come from .kai_physics_params.json (darwin-promoted) or the
