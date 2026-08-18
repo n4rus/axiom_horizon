@@ -425,9 +425,10 @@ def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str
     return d.get("message", {}).get("content", "").strip()
 
 
-def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0) -> tuple:
+def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
+                 model: str = "qwen2.5-coder:3b") -> tuple:
     body = {
-        "model": "kai/qwen2.5-coder:3b",
+        "model": f"kai/{model}",
         "messages": [{"role": "user", "content": q}],
         "stream": False,
         "max_tokens": max_tokens,
@@ -472,7 +473,8 @@ def run_tests(code: str, tests: str) -> tuple:
         return False, f"{type(e).__name__}: {e}"
 
 
-def grade_arm(label: str, tasks: list, mode: str, k: int, port: int) -> dict:
+def grade_arm(label: str, tasks: list, mode: str, k: int, port: int,
+              model: str = "qwen2.5-coder:3b") -> dict:
     pass1, solved = 0, 0
     attempts_used = []
     temps = []
@@ -487,13 +489,13 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int) -> dict:
             if mode == "greedy":
                 # Deterministic: only attempt 0 is meaningful, but re-run to
                 # verify stability (greedy must repeat the SAME code).
-                ans = _ollama_chat("qwen2.5-coder:3b", q, 0.0, MAX_TOKENS)
+                ans = _ollama_chat(model, q, 0.0, MAX_TOKENS)
                 temp_used = 0.0
             elif mode == "fixed":
-                ans = _ollama_chat("qwen2.5-coder:3b", q, 0.7, MAX_TOKENS)
+                ans = _ollama_chat(model, q, 0.7, MAX_TOKENS)
                 temp_used = 0.7
             else:  # physics
-                ans, phys = _bridge_chat(q, MAX_TOKENS, port, attempt=attempt)
+                ans, phys = _bridge_chat(q, MAX_TOKENS, port, attempt=attempt, model=model)
                 temp_used = phys.get("temperature", 0.7)
             task_temps.append(temp_used)
             passed, err = run_tests(extract_code(ans), task["tests"])
@@ -523,7 +525,7 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int) -> dict:
               f"solved@={task_solved_at or '-'} temps={task_temps}")
     n = len(tasks)
     res = {
-        "t": time.time(), "label": label, "mode": mode, "worker": "qwen2.5-coder:3b",
+        "t": time.time(), "label": label, "mode": mode, "worker": model,
         "k": k, "tasks": n, "elapsed_s": round(time.time() - t0, 1),
         "pass1": round(pass1 / n, 3), "pass_k": round(solved / n, 3),
         "solved": solved, "mean_attempts": round(
@@ -541,18 +543,22 @@ def main():
     ap.add_argument("--k", type=int, default=K_DEFAULT, help="attempts per task (best-of-K)")
     ap.add_argument("--label", default="code_bench")
     ap.add_argument("--port", type=int, default=BRIDGE_PORT)
+    ap.add_argument("--model", default="qwen2.5-coder:3b",
+                    help="coder model for all arms (default qwen2.5-coder:3b)")
     ap.add_argument("--arms", default="greedy,fixed,physics",
                     help="comma-separated arms to run")
     args = ap.parse_args()
 
     tasks = TASKS[: args.tasks]
-    print(f"==== kai code bench  label='{args.label}'  tasks={len(tasks)}  K={args.k}  arms={args.arms}")
+    print(f"==== kai code bench  label='{args.label}'  model={args.model}  "
+          f"tasks={len(tasks)}  K={args.k}  arms={args.arms}")
     print(f"     objective grading (hidden unit tests), no judge, no rubric\n")
 
     results = {}
     for mode in [m.strip() for m in args.arms.split(",")]:
         print(f"--- arm: {mode} ---")
-        res = grade_arm(f"{args.label}_{mode}", tasks, mode, args.k, args.port)
+        res = grade_arm(f"{args.label}_{mode}", tasks, mode, args.k, args.port,
+                        model=args.model)
         results[mode] = res
         with open(RECORD, "a") as f:
             f.write(json.dumps(res) + "\n")
