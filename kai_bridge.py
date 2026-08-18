@@ -881,6 +881,11 @@ def call_ollama_chat(body: dict, timeout: float = 120.0) -> dict:
     timeout: per-request HTTP timeout. Cold model loads on the 6GB card can
     exceed 120s (gemma4:12b ~162s), so fuse teacher calls pass a larger
     budget; the default stays 120s for the interactive chat path."""
+    # gemma4 is a "thinking" model by default: it fills `message.thinking`
+    # and returns EMPTY `message.content`. For code generation we need the
+    # final answer in content — disable thinking for gemma models.
+    if "gemma" in body.get("model", "").lower():
+        body = {**body, "think": False}
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         OLLAMA_CHAT_URL,

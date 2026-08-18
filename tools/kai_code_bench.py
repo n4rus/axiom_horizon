@@ -417,10 +417,17 @@ def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str
         "stream": False,
         "options": {"temperature": temperature, "num_predict": max_tokens},
     }
+    # gemma4 defaults to "thinking" mode: fills `message.thinking` and
+    # returns EMPTY content. Disable thinking so the code lands in content
+    # (also ~7x faster: 14s vs 104s). No-op for non-gemma models.
+    if "gemma" in model.lower():
+        body["think"] = False
     req = urllib.request.Request(
         f"{STOCK}/api/chat", data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=180) as r:
+    # 12b on 6GB VRAM offloads 53% to CPU — first calls (incl. cold model
+    # load) can exceed 180s. Match the bridge ceiling of 900s.
+    with urllib.request.urlopen(req, timeout=900) as r:
         d = json.loads(r.read())
     return d.get("message", {}).get("content", "").strip()
 
