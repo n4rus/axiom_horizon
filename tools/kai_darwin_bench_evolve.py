@@ -119,15 +119,27 @@ def mutate(parent, rate):
 
 
 def evaluate(vec, model, port, label, k):
-    """Physics-arm bench on the fixed subset. Returns (fitness, result)."""
+    """Physics-arm bench on the fixed subset. Returns (fitness, result).
+
+    Resilience: the bridge can restart mid-eval (or ollama can drop a
+    request). grade_arm's per-task ledger makes re-entry cheap, but a dead
+    bridge raises URLError out of grade_arm — retry the whole eval a few
+    times with backoff instead of crashing the generation.
+    """
     write_params(vec)
-    # Wait for the bridge to pick up the new mtime (it reloads on request,
-    # so the first request already uses the new params — no sleep needed).
     tasks = [t for t in TASKS if t["name"] in SUBSET]
-    res = grade_arm(label, tasks, "physics", k, port, model=model)
-    # Fitness: pass@1 primary, pass@K secondary, minus wasted attempts.
-    fit = res["pass1"] * 0.7 + res["pass_k"] * 0.3 - 0.01 * (res["mean_attempts"] or 0)
-    return fit, res
+    last_err = None
+    for attempt in range(3):
+        try:
+            res = grade_arm(label, tasks, "physics", k, port, model=model)
+            fit = res["pass1"] * 0.7 + res["pass_k"] * 0.3 - 0.01 * (res["mean_attempts"] or 0)
+            return fit, res
+        except Exception as e:
+            last_err = e
+            print(f"  [eval retry {attempt + 1}/3] {type(e).__name__}: {e}",
+                  flush=True)
+            time.sleep(15 * (attempt + 1))
+    raise last_err
 
 
 def main():
