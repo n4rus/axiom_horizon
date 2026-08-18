@@ -53,12 +53,14 @@ ARCHIVE_PATH = os.path.join(ROOT, ".axiom_state", "darwin_probe_archive.json")
 KNOBS = {
     "t_low": (0.15, 0.05, 0.60),
     "t_high": (1.60, 1.0, 2.4),
+    "probe_mode": (1, 0, 1),
     "probe_verify_temp": (0.0, 0.0, 0.80),
     "probe_n_verify": (1, 1, 3),
     "probe_agree_frac": (1.0, 0.40, 1.0),
+    "probe_gen_temp": (0.4, 0.0, 1.0),
     "auto_max_attempts": (3, 1, 4),
 }
-_INT_KNOBS = {"probe_n_verify", "auto_max_attempts"}
+_INT_KNOBS = {"probe_n_verify", "auto_max_attempts", "probe_mode"}
 
 DEFAULT_VEC = {k: v[0] for k, v in KNOBS.items()}
 
@@ -101,6 +103,7 @@ def write_params(vec):
     merged["auto_loop"] = 1.0
     merged["probe_n_verify"] = int(merged["probe_n_verify"])
     merged["auto_max_attempts"] = int(merged["auto_max_attempts"])
+    merged["probe_mode"] = int(merged["probe_mode"])
     tmp = PARAMS_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(merged, f, indent=1)

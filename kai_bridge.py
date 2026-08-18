@@ -784,6 +784,101 @@ class VFEState:
             print(f"[kai_bridge] verify_answer warn: {e}", file=sys.stderr, flush=True)
             return False, 0.0
 
+    def verify_answer_exec(self, answer: str, model: str,
+                           n_samples: int = 1, agree_frac: float = 1.0,
+                           gen_temp: float = 0.4,
+                           question: str = "") -> tuple:
+        """Execution-grounded self-verification (LAYER 2c, probe_mode=1).
+
+        The reviewer probe was falsified at 3b (darwin: plateau at baseline,
+        never escalates). The first exec-probe version generated asserts
+        FROM the code — which inherits the code's own (possibly wrong)
+        behavior and noisy test-gen caused false escalations (fitness 0.479,
+        everything overheated). This variant generates asserts FROM THE
+        QUESTION (the task spec / intent), so tests are INDEPENDENT of the
+        answer's implementation:
+
+          1. Extract the python code from the answer.
+          2. Ask the model to write assert-based tests FOR THE QUESTION
+             (function name + spec + edge cases) — intent, not the draft.
+          3. Run code + asserts in a constrained subprocess (CPU/AS limits,
+             10s timeout). Wrong code fails spec asserts; correct code
+             passes them — a real, world-grounded failure signal.
+          4. Verified iff >= agree_frac of batches pass clean.
+
+        Returns (verified, detail) — detail is clean-batch fraction on
+        success, first error text on failure.
+        """
+        if not answer or not answer.strip():
+            return False, "empty"
+        import re
+        try:
+            m = re.search(r"```(?:python|py)?\s*\n(.*?)```", answer, re.DOTALL)
+            code = m.group(1).strip() if m else answer.strip()
+            if not code:
+                return False, "no code"
+            # Function names: prefer the name the QUESTION specifies (the
+            # real contract) — fall back to the answer's own defs. Pinning
+            # the spec'd name makes NameError a REAL failure signal (a
+            # renamed function fails the spec asserts instead of trivially
+            # passing its own renamed asserts).
+            spec_defs = re.findall(
+                r"(?:function|def|class)\s+(\w+)\s*[(:]", question) if question else []
+            code_defs = re.findall(r"^\s*(?:def|class)\s+(\w+)", code, re.MULTILINE)
+            fn_names = list(dict.fromkeys(spec_defs)) or list(dict.fromkeys(code_defs))
+            spec = question.strip() or "the described task"
+            clean_batches = 0
+            first_err = "unknown"
+            for _ in range(max(1, int(n_samples))):
+                t_prompt = (
+                    "You are a test engineer. Given this task:\n"
+                    f"{spec[:700]}\n\n"
+                    "and the function/class name(s) "
+                    f"{', '.join(fn_names) if fn_names else 'you infer from the task'},\n"
+                    "write 3 assert statements testing the REQUIRED behavior "
+                    "from the task description (edge cases included). The "
+                    "implementation may be wrong or use different names — "
+                    "your asserts MUST call the exact name(s) listed above "
+                    "and encode the CORRECT expected behavior. Output ONLY "
+                    "the assert statements, one per line.")
+                t_body = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": t_prompt}],
+                    "stream": False,
+                    "options": {"temperature": gen_temp, "num_predict": 200},
+                }
+                td = call_ollama_chat(t_body, timeout=120.0)
+                asserts = (td.get("message", {}).get("content", "") or "").strip()
+                if not asserts:
+                    first_err = "no asserts generated"
+                    continue
+                assert_lines = [ln.strip() for ln in asserts.splitlines()
+                                if ln.strip().startswith("assert")]
+                if not assert_lines:
+                    first_err = "no assert lines"
+                    continue
+                src = code + "\n\n" + "\n".join(assert_lines)
+                try:
+                    p = subprocess.run(
+                        [sys.executable, "-c", src],
+                        capture_output=True, text=True, timeout=10)
+                    if p.returncode == 0:
+                        clean_batches += 1
+                    else:
+                        first_err = (p.stderr or p.stdout or "").strip()[:200]
+                except subprocess.TimeoutExpired:
+                    first_err = "exec timeout"
+                except Exception as e:
+                    first_err = str(e)[:200]
+            frac = clean_batches / max(1, int(n_samples))
+            verified = frac >= float(agree_frac)
+            detail = f"{frac:.2f}" if verified else f"{first_err}"
+            return verified, detail
+        except Exception as e:
+            print(f"[kai_bridge] verify_answer_exec warn: {e}",
+                  file=sys.stderr, flush=True)
+            return False, "verify error"
+
     def update_tau(self, response_novelty: float, vfe_tau_rate: float, tau_min: float, tau_max: float):
         """Post-response tau update — zero-centered on the novelty baseline.
 
@@ -1035,11 +1130,16 @@ class PhysicsParams:
         # Autonomous closed loop (LAYER 2c): bridge self-verifies and
         # escalates WITHOUT an external attempt field. auto_loop=1 enables
         # it for production requests; probe knobs are darwin-evolvable.
+        # probe_mode: 0 = reviewer (LLM judges its own code — falsified at
+        # 3b, never escalates); 1 = execution (code is run against
+        # self-generated asserts — deterministic, world-grounded signal).
         "auto_loop": 0,
         "auto_max_attempts": 3,
+        "probe_mode": 1,
         "probe_verify_temp": 0.0,
         "probe_n_verify": 1,
         "probe_agree_frac": 1.0,
+        "probe_gen_temp": 0.4,
     }
 
     def __init__(self):
@@ -1618,11 +1718,19 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                 # regenerate. The bridge decides — not the caller.
                 if (auto_loop_on and resp_content.strip()
                         and auto_attempts < auto_max):
-                    auto_verified, auto_agreement = self.vfe_state.verify_answer(
-                        resp_content, ollama_model,
-                        verify_temp=float(pp.get("probe_verify_temp", 0.0)),
-                        n_samples=int(pp.get("probe_n_verify", 1)),
-                        agree_frac=float(pp.get("probe_agree_frac", 1.0)))
+                    if int(pp.get("probe_mode", 1)) == 0:
+                        auto_verified, auto_agreement = self.vfe_state.verify_answer(
+                            resp_content, ollama_model,
+                            verify_temp=float(pp.get("probe_verify_temp", 0.0)),
+                            n_samples=int(pp.get("probe_n_verify", 1)),
+                            agree_frac=float(pp.get("probe_agree_frac", 1.0)))
+                    else:
+                        auto_verified, auto_agreement = self.vfe_state.verify_answer_exec(
+                            resp_content, ollama_model,
+                            n_samples=int(pp.get("probe_n_verify", 1)),
+                            agree_frac=float(pp.get("probe_agree_frac", 1.0)),
+                            gen_temp=float(pp.get("probe_gen_temp", 0.4)),
+                            question=user_text)
                     auto_attempts += 1
                     if auto_verified:
                         print(f"[kai_bridge] auto-verify PASSED attempt {auto_attempts} "
@@ -1884,7 +1992,9 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                     # self-escalated on this request (no external attempt).
                     "auto_attempts": auto_attempts,
                     "auto_verified": int(auto_verified),
-                    "auto_agreement": round(auto_agreement, 4),
+                    "auto_agreement": (round(auto_agreement, 4)
+                                       if isinstance(auto_agreement, (int, float))
+                                       else auto_agreement),
                 },
             }
             self._send_json(200, resp)
