@@ -741,6 +741,49 @@ class VFEState:
             print(f"[kai_bridge] probe_difficulty warn: {e}", file=sys.stderr, flush=True)
             return None, 0.0
 
+    def verify_answer(self, answer: str, model: str,
+                      verify_temp: float = 0.0, n_samples: int = 1,
+                      agree_frac: float = 1.0) -> tuple:
+        """Self-verification with majority vote (LAYER 2c, darwin-evolvable).
+
+        The old probe used ONE temp-0 review and was measured unreliable
+        (false-flagged easy fizzbuzz INCORRECT — see code_escalation probe
+        analysis). This variant runs `n_samples` independent reviewer calls
+        at `verify_temp` and returns (verified, agreement) where agreement =
+        fraction of CORRECT verdicts. The verifier is a strict code
+        reviewer; the same draft is re-reviewed each time (temperature
+        injects the diversity). Verified iff agreement >= agree_frac.
+
+        Returns (verified: bool, agreement: float). Never raises — on any
+        failure it degrades to (False, 0.0) so the caller's escalation still
+        fires (exploring on an unverifiable answer is safer than trusting it).
+        """
+        if not answer or not answer.strip():
+            return False, 0.0
+        try:
+            correct = 0
+            for _ in range(max(1, int(n_samples))):
+                v_prompt = (
+                    "You are a strict code reviewer. Is the following Python "
+                    "code CORRECT? Consider edge cases. Reply with exactly "
+                    f"CORRECT or INCORRECT.\n\nCODE:\n{answer[:600]}\n\n"
+                    "Reply: CORRECT or INCORRECT")
+                v_body = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": v_prompt}],
+                    "stream": False,
+                    "options": {"temperature": verify_temp, "num_predict": 10},
+                }
+                vd = call_ollama_chat(v_body, timeout=120.0)
+                verdict = (vd.get("message", {}).get("content", "") or "").strip().upper()
+                if "CORRECT" in verdict and "INCORRECT" not in verdict:
+                    correct += 1
+            agreement = correct / max(1, int(n_samples))
+            return agreement >= float(agree_frac), round(agreement, 3)
+        except Exception as e:
+            print(f"[kai_bridge] verify_answer warn: {e}", file=sys.stderr, flush=True)
+            return False, 0.0
+
     def update_tau(self, response_novelty: float, vfe_tau_rate: float, tau_min: float, tau_max: float):
         """Post-response tau update — zero-centered on the novelty baseline.
 
@@ -989,6 +1032,14 @@ class PhysicsParams:
         "recall_sim_gate": 0.45,
         "recall_top_k": 3,
         "recall_ctx_chars": 300,
+        # Autonomous closed loop (LAYER 2c): bridge self-verifies and
+        # escalates WITHOUT an external attempt field. auto_loop=1 enables
+        # it for production requests; probe knobs are darwin-evolvable.
+        "auto_loop": 0,
+        "auto_max_attempts": 3,
+        "probe_verify_temp": 0.0,
+        "probe_n_verify": 1,
+        "probe_agree_frac": 1.0,
     }
 
     def __init__(self):
@@ -1525,6 +1576,20 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         # Loop: model emits tool_calls -> we EXECUTE them via the agency,
         # append the observation, re-ask the model (bounded). The agent thus
         # sees its own action's consequence -> closes perceive-act-observe.
+        #
+        # LAYER 2c AUTONOMOUS LOOP: when auto_loop=1 and the caller did NOT
+        # send an external `attempt` retry index, the bridge closes the loop
+        # ITSELF: generate at t_low -> self-verify (majority vote) -> if
+        # unverified, escalate to t_high and regenerate, bounded by
+        # auto_max_attempts. This is the production-closed loop: no harness
+        # tells the bridge when it failed; the bridge decides via its own
+        # epistemic self-assessment (probe knobs are darwin-evolvable).
+        auto_loop_on = (int(req.get("auto", 0) or 0) == 1
+                        and float(pp.get("auto_loop", 0)) == 1.0)
+        auto_max = int(pp.get("auto_max_attempts", 3))
+        auto_attempts = 0
+        auto_verified = False
+        auto_agreement = 0.0
         t_start = time.time()
         action_turns = 0
         action_observations = []  # (tool_name, obs)
@@ -1547,6 +1612,37 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
             # If we've executed no action (or reached the cap / no tool), now
             # we have a final response to hand back: break with this answer.
             if not resp_tool_calls or action_turns >= max_turns:
+                # LAYER 2c: autonomous self-verification. If we generated a
+                # final answer and the loop is on (and we still have attempts
+                # left), verify it; on failure, escalate temperature and
+                # regenerate. The bridge decides — not the caller.
+                if (auto_loop_on and resp_content.strip()
+                        and auto_attempts < auto_max):
+                    auto_verified, auto_agreement = self.vfe_state.verify_answer(
+                        resp_content, ollama_model,
+                        verify_temp=float(pp.get("probe_verify_temp", 0.0)),
+                        n_samples=int(pp.get("probe_n_verify", 1)),
+                        agree_frac=float(pp.get("probe_agree_frac", 1.0)))
+                    auto_attempts += 1
+                    if auto_verified:
+                        print(f"[kai_bridge] auto-verify PASSED attempt {auto_attempts} "
+                              f"(agree={auto_agreement}) — returning at T={probe_temp}",
+                              file=sys.stderr, flush=True)
+                        break
+                    # Escalate: re-ask at exploratory temperature.
+                    options["temperature"] = float(pp.get("t_high", 1.60))
+                    probe_temp = float(pp.get("t_high", 1.60))
+                    ollama_body["options"] = options
+                    # Re-arm messages from the ORIGINAL conversation (the
+                    # failed draft is NOT fed back — exploration is fresh,
+                    # not self-reinforcing).
+                    ollama_body["messages"] = ollama_messages
+                    print(f"[kai_bridge] auto-verify FAILED (agree={auto_agreement}) "
+                          f"attempt {auto_attempts}/{auto_max} -> escalate to T={probe_temp}",
+                          file=sys.stderr, flush=True)
+                    action_turns = 0
+                    action_observations = []
+                    continue
                 break
 
             # --- Action phase: execute requested tools in-process ---
@@ -1784,6 +1880,11 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                     "dominant_domain": dom_name,
                     "dominant_responsibility": round(dom_resp, 4),
                     "probe_agreement": p_agree,
+                    # LAYER 2c autonomous loop readout: how the bridge
+                    # self-escalated on this request (no external attempt).
+                    "auto_attempts": auto_attempts,
+                    "auto_verified": int(auto_verified),
+                    "auto_agreement": round(auto_agreement, 4),
                 },
             }
             self._send_json(200, resp)

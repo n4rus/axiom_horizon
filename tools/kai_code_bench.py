@@ -433,20 +433,30 @@ def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str
 
 
 def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
-                 model: str = "qwen2.5-coder:3b", retries: int = 2) -> tuple:
+                 model: str = "qwen2.5-coder:3b", retries: int = 2,
+                 auto: bool = False) -> tuple:
     """Bridge call with connection resilience: 7b on 6GB VRAM + auto-recall
     + absorb can push a single request past 240s; the client timeout was
     closing the socket mid-request (RemoteDisconnected on the bench,
     BrokenPipeError in the bridge journal). Raise the timeout to 600s and
-    retry transient connection drops instead of crashing the whole arm."""
+    retry transient connection drops instead of crashing the whole arm.
+
+    auto=True sends the LAYER 2c autonomous-request flag (NO external
+    attempt index): the bridge itself self-verifies and escalates
+    internally (generate -> verify -> explore, bounded by auto_max_attempts).
+    This is the honest closed-loop measurement: pass@1 here is the bridge's
+    own self-decided final answer."""
     body = {
         "model": f"kai/{model}",
         "messages": [{"role": "user", "content": q}],
         "stream": False,
         "max_tokens": max_tokens,
         "temperature": 0.7,  # base knob; bridge's VFE controller adapts it
-        "attempt": attempt,  # 0 = first try (confident), >0 = retry (explore)
     }
+    if auto:
+        body["auto"] = 1  # no attempt field — bridge decides escalation
+    else:
+        body["attempt"] = attempt  # 0 = first try (confident), >0 = retry (explore)
     last_err = None
     for rtry in range(retries + 1):
         try:
@@ -544,6 +554,14 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int,
             elif mode == "fixed":
                 ans = _ollama_chat(model, q, 0.7, MAX_TOKENS)
                 temp_used = 0.7
+            elif mode == "auto":
+                # LAYER 2c autonomous loop: ONE external call, no attempt
+                # index — the bridge self-verifies and escalates internally.
+                # Honest closed loop: the bridge's final answer is graded.
+                ans, phys = _bridge_chat(q, MAX_TOKENS, port, model=model, auto=True)
+                temp_used = phys.get("temperature", 0.7)
+                if attempt > 0:
+                    break  # single external call; bridge loop is internal
             else:  # physics
                 ans, phys = _bridge_chat(q, MAX_TOKENS, port, attempt=attempt, model=model)
                 temp_used = phys.get("temperature", 0.7)
@@ -571,6 +589,10 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int,
             "attempts": task_solved_at or 0,
             "temps": task_temps,
         }
+        if mode == "auto":
+            entry["auto_attempts"] = phys.get("auto_attempts", 0)
+            entry["auto_verified"] = bool(phys.get("auto_verified", 0))
+            entry["auto_agreement"] = phys.get("auto_agreement", 0.0)
         per_task.append(entry)
         ledger.write(json.dumps(entry) + "\n")
         ledger.flush()

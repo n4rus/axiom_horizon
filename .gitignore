@@ -49,6 +49,8 @@ rust/kai-fusion/fix_lifecycle
 .kai_ingest_progress.json
 .kai_physics_params.json
 .kai_physics_bench.jsonl
+.kai_code_bench.jsonl
+.kai_code_bench.jsonl.*
 .kai_recall_bench.jsonl
 .kai_refine_ledger.jsonl
 attractor.bin
