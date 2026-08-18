@@ -981,6 +981,14 @@ class PhysicsParams:
         "vfe_tau_rate": 0.061,
         "tau_min": 0.855,
         "tau_max": 1.657,
+        # Attempt-gated escalation controller (LAYER 2b).
+        "t_low": 0.15,
+        "t_high": 1.60,
+        # Auto self-recall knobs (LAYER 1), darwin-evolvable.
+        "recall_thin_len": 40,
+        "recall_sim_gate": 0.45,
+        "recall_top_k": 3,
+        "recall_ctx_chars": 300,
     }
 
     def __init__(self):
@@ -1589,17 +1597,24 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         if (ACTION_LOOP_ENABLED and AGENCY is not None
                 and not action_observations
                 and user_text.strip()):
-            thin = not resp_content.strip() or len(resp_content.strip()) < 40
+            # Recall knobs are darwin-evolvable via the live params file:
+            #   recall_thin_len  — answer "thin" threshold (default 40 chars)
+            #   recall_sim_gate  — min corpus similarity to inject (default 0.45)
+            #   recall_top_k     — how many hits to inject (default 3)
+            #   recall_ctx_chars — per-hit context budget (default 300)
+            thin = not resp_content.strip() or len(resp_content.strip()) < \
+                int(self.physics_params.get("recall_thin_len", 40))
             try:
-                hits = self.corpus.search(user_text, top_k=3)
+                hits = self.corpus.search(user_text, top_k=int(self.physics_params.get("recall_top_k", 3)))
                 best = hits[0]["similarity"] if hits else 0.0
             except Exception:
                 hits, best = [], 0.0
-            if thin and hits and best >= 0.45:
+            if thin and hits and best >= float(self.physics_params.get("recall_sim_gate", 0.45)):
                 self_recall_used = True
                 ctx = "[retrieved via auto self-recall]\n"
-                for h in hits[:3]:
-                    ctx += f"  {h['path']} (sim={h['similarity']:.2f}): {h['text'][:300]}\n"
+                ctx_chars = int(self.physics_params.get("recall_ctx_chars", 300))
+                for h in hits[: int(self.physics_params.get("recall_top_k", 3))]:
+                    ctx += f"  {h['path']} (sim={h['similarity']:.2f}): {h['text'][:ctx_chars]}\n"
                 print(f"[kai_bridge][act] auto-recall injected (best={best:.2f})", file=sys.stderr, flush=True)
                 messages.insert(0, {"role": "system", "content": ctx})
                 ollama_body["messages"] = [convert_openai_to_ollama(m) for m in messages]
