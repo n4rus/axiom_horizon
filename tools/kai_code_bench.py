@@ -426,7 +426,12 @@ def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str
 
 
 def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
-                 model: str = "qwen2.5-coder:3b") -> tuple:
+                 model: str = "qwen2.5-coder:3b", retries: int = 2) -> tuple:
+    """Bridge call with connection resilience: 7b on 6GB VRAM + auto-recall
+    + absorb can push a single request past 240s; the client timeout was
+    closing the socket mid-request (RemoteDisconnected on the bench,
+    BrokenPipeError in the bridge journal). Raise the timeout to 600s and
+    retry transient connection drops instead of crashing the whole arm."""
     body = {
         "model": f"kai/{model}",
         "messages": [{"role": "user", "content": q}],
@@ -435,15 +440,25 @@ def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
         "temperature": 0.7,  # base knob; bridge's VFE controller adapts it
         "attempt": attempt,  # 0 = first try (confident), >0 = retry (explore)
     }
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=240) as r:
-        d = json.loads(r.read())
-    content = (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-    phys = d.get("kai_physics", {}) or {}
-    return content, phys
+    last_err = None
+    for rtry in range(retries + 1):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=600) as r:
+                d = json.loads(r.read())
+            content = (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+            phys = d.get("kai_physics", {}) or {}
+            return content, phys
+        except Exception as e:
+            last_err = e
+            if rtry < retries:
+                print(f"  [bridge retry {rtry + 1}/{retries}] {type(e).__name__}: {e}",
+                      flush=True)
+                time.sleep(5 * (rtry + 1))
+    raise last_err
 
 
 def extract_code(text: str) -> str:
@@ -475,12 +490,38 @@ def run_tests(code: str, tests: str) -> tuple:
 
 def grade_arm(label: str, tasks: list, mode: str, k: int, port: int,
               model: str = "qwen2.5-coder:3b") -> dict:
+    # Per-task resume: a crash mid-arm (RemoteDisconnected at 7b) must not
+    # discard completed tasks. Ledger persists one line per task; on restart
+    # with the same (label, mode), completed tasks are replayed, not re-run.
+    ledger_path = RECORD + f".{label}.{mode}.ledger.jsonl"
+    done = {}
+    if os.path.exists(ledger_path):
+        for line in open(ledger_path):
+            try:
+                e = json.loads(line)
+                done[e["name"]] = e
+            except Exception:
+                pass
     pass1, solved = 0, 0
     attempts_used = []
     temps = []
     per_task = []
     t0 = time.time()
+    ledger = open(ledger_path, "a")
     for ti, task in enumerate(tasks, 1):
+        if task["name"] in done:
+            e = done[task["name"]]
+            per_task.append(e)
+            if e["pass1"]: pass1 += 1
+            if e["solved"]:
+                solved += 1
+                attempts_used.append(e["attempts"])
+            else:
+                attempts_used.append(0)
+            temps.append(round(sum(e["temps"]) / len(e["temps"]), 3) if e["temps"] else 0.0)
+            print(f"  [{ti}/{len(tasks)}] {task['name']:18s} (resumed) pass1={e['pass1']} "
+                  f"solved@={e['attempts'] or '-'}")
+            continue
         q = task["prompt"]
         first_pass = None
         task_solved_at = None
@@ -515,14 +556,18 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int,
             attempts_used.append(task_solved_at)
         else:
             attempts_used.append(0)
-        per_task.append({
+        entry = {
             "name": task["name"], "pass1": bool(first_pass),
             "solved": task_solved_at is not None,
             "attempts": task_solved_at or 0,
             "temps": task_temps,
-        })
+        }
+        per_task.append(entry)
+        ledger.write(json.dumps(entry) + "\n")
+        ledger.flush()
         print(f"  [{ti}/{len(tasks)}] {task['name']:18s} pass1={first_pass} "
               f"solved@={task_solved_at or '-'} temps={task_temps}")
+    ledger.close()
     n = len(tasks)
     res = {
         "t": time.time(), "label": label, "mode": mode, "worker": model,
