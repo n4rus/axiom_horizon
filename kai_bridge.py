@@ -1518,7 +1518,12 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         max_turns = ACTION_LOOP_TURNS if (ACTION_LOOP_ENABLED and AGENCY is not None) else 0
         while True:
             try:
-                ollama_resp = call_ollama_chat(ollama_body)
+                # 7b on 6GB VRAM + auto-recall + absorb can exceed the 120s
+                # default; a bridge-side timeout kills the client connection
+                # mid-request (RemoteDisconnected on the bench). Use the
+                # generous 900s ceiling that matches the bench client (the
+                # action loop can take ~10 min/task at 7b).
+                ollama_resp = call_ollama_chat(ollama_body, timeout=900.0)
             except RuntimeError as e:
                 self._send_json(502, {"error": str(e)})
                 return

@@ -447,7 +447,7 @@ def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
                 f"http://127.0.0.1:{port}/v1/chat/completions",
                 data=json.dumps(body).encode(),
                 headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=600) as r:
+            with urllib.request.urlopen(req, timeout=900) as r:
                 d = json.loads(r.read())
             content = (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
             phys = d.get("kai_physics", {}) or {}
@@ -492,8 +492,10 @@ def grade_arm(label: str, tasks: list, mode: str, k: int, port: int,
               model: str = "qwen2.5-coder:3b") -> dict:
     # Per-task resume: a crash mid-arm (RemoteDisconnected at 7b) must not
     # discard completed tasks. Ledger persists one line per task; on restart
-    # with the same (label, mode), completed tasks are replayed, not re-run.
-    ledger_path = RECORD + f".{label}.{mode}.ledger.jsonl"
+    # with the same label, completed tasks are replayed, not re-run.
+    # NOTE: `label` already contains the mode suffix (main() calls
+    # grade_arm(f"{args.label}_{mode}", ...)) — do NOT append mode again.
+    ledger_path = RECORD + f".{label}.ledger.jsonl"
     done = {}
     if os.path.exists(ledger_path):
         for line in open(ledger_path):
