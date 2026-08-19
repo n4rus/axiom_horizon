@@ -734,8 +734,9 @@ class VFEState:
             correct = "CORRECT" in verdict and "INCORRECT" not in verdict
             pp = self.physics_params if hasattr(self, "physics_params") else {}
             t_low = float(pp.get("t_low", 0.15))
+            t_mid = float(pp.get("t_mid", 0.60))
             t_high = float(pp.get("t_high", 1.60))
-            adapted = t_low if correct else t_high
+            adapted = t_low if correct else t_mid
             return round(adapted, 4), (1.0 if correct else 0.0)
         except Exception as e:
             print(f"[kai_bridge] probe_difficulty warn: {e}", file=sys.stderr, flush=True)
@@ -817,6 +818,13 @@ class VFEState:
             code = m.group(1).strip() if m else answer.strip()
             if not code:
                 return False, "no code"
+            # Non-code answers (prose/analysis/chat) cannot be exec-verified:
+            # if there is no fenced block AND no def/class definitions, the
+            # answer is not code — trust it (no escalation). This prevents
+            # the probe from running prose as Python (garbage escalation).
+            code_defs = re.findall(r"^\s*(?:def|class)\s+(\w+)", code, re.MULTILINE)
+            if not m and not code_defs:
+                return True, "non-code"
             # Function names: prefer the name the QUESTION specifies (the
             # real contract) — fall back to the answer's own defs. Pinning
             # the spec'd name makes NameError a REAL failure signal (a
@@ -829,13 +837,16 @@ class VFEState:
             spec = question.strip() or "the described task"
             clean_batches = 0
             first_err = "unknown"
+            n_asserts = self.physics_params.get("probe_n_asserts", 5) \
+                if hasattr(self, "physics_params") else 5
             for _ in range(max(1, int(n_samples))):
                 t_prompt = (
                     "You are a test engineer. Given this task:\n"
                     f"{spec[:700]}\n\n"
                     "and the function/class name(s) "
                     f"{', '.join(fn_names) if fn_names else 'you infer from the task'},\n"
-                    "write 3 assert statements testing the REQUIRED behavior "
+                    f"write {int(n_asserts)} assert statements testing the REQUIRED "
+                    "behavior "
                     "from the task description (edge cases included). The "
                     "implementation may be wrong or use different names — "
                     "your asserts MUST call the exact name(s) listed above "
@@ -845,10 +856,15 @@ class VFEState:
                     "model": model,
                     "messages": [{"role": "user", "content": t_prompt}],
                     "stream": False,
-                    "options": {"temperature": gen_temp, "num_predict": 200},
+                    "options": {"temperature": gen_temp, "num_predict": 500},
                 }
                 td = call_ollama_chat(t_body, timeout=120.0)
                 asserts = (td.get("message", {}).get("content", "") or "").strip()
+                # Strip code fences from the probe's output (the model often
+                # wraps its asserts in ```python ... ```).
+                m2 = re.search(r"```(?:python|py)?\s*\n(.*?)```", asserts, re.DOTALL)
+                if m2:
+                    asserts = m2.group(1)
                 if not asserts:
                     first_err = "no asserts generated"
                     continue
@@ -858,18 +874,42 @@ class VFEState:
                     first_err = "no assert lines"
                     continue
                 src = code + "\n\n" + "\n".join(assert_lines)
-                try:
-                    p = subprocess.run(
-                        [sys.executable, "-c", src],
-                        capture_output=True, text=True, timeout=10)
-                    if p.returncode == 0:
-                        clean_batches += 1
-                    else:
-                        first_err = (p.stderr or p.stdout or "").strip()[:200]
-                except subprocess.TimeoutExpired:
-                    first_err = "exec timeout"
-                except Exception as e:
-                    first_err = str(e)[:200]
+                # Distinguish PROBE-side failure from ANSWER-side failure:
+                # a SyntaxError/IndentationError usually means the probe's
+                # own generated asserts are malformed (a correct answer was
+                # once rejected because the assert itself failed to parse).
+                # Regenerate the asserts (up to 2 retries) before counting
+                # the batch against the answer.
+                retries = 0
+                while True:
+                    try:
+                        p = subprocess.run(
+                            [sys.executable, "-c", src],
+                            capture_output=True, text=True, timeout=10)
+                        if p.returncode == 0:
+                            clean_batches += 1
+                        else:
+                            err_text = (p.stderr or p.stdout or "").strip()[:200]
+                            first_err = err_text
+                            bad_asserts = ("SyntaxError" in err_text
+                                           or "IndentationError" in err_text)
+                            if bad_asserts and retries < 2:
+                                retries += 1
+                                td2 = call_ollama_chat(t_body, timeout=120.0)
+                                asserts = (td2.get("message", {}).get("content", "") or "").strip()
+                                assert_lines = [ln.strip() for ln in asserts.splitlines()
+                                                if ln.strip().startswith("assert")]
+                                src = code + "\n\n" + "\n".join(assert_lines)
+                                if not assert_lines:
+                                    break
+                                continue
+                        break
+                    except subprocess.TimeoutExpired:
+                        first_err = "exec timeout"
+                        break
+                    except Exception as e:
+                        first_err = str(e)[:200]
+                        break
             frac = clean_batches / max(1, int(n_samples))
             verified = frac >= float(agree_frac)
             detail = f"{frac:.2f}" if verified else f"{first_err}"
@@ -1119,8 +1159,15 @@ class PhysicsParams:
         "vfe_tau_rate": 0.061,
         "tau_min": 0.855,
         "tau_max": 1.657,
-        # Attempt-gated escalation controller (LAYER 2b).
+        # Attempt-gated escalation controller (LAYER 2b). THREE tiers now:
+        # t_low (confident first try) -> t_mid (first retry samples the
+        # competence window that fixed-0.7 empirically hits on matrix_transpose
+        # at 3b/7b/12b) -> t_high (exploration). The old 2-tier controller
+        # (0.15 -> 1.6) jumped clean over the ~0.6 window, so matrix_transpose
+        # was structurally unsolvable under escalation. The ramp is
+        # darwin-evolvable.
         "t_low": 0.15,
+        "t_mid": 0.60,
         "t_high": 1.60,
         # Auto self-recall knobs (LAYER 1), darwin-evolvable.
         "recall_thin_len": 40,
@@ -1140,6 +1187,11 @@ class PhysicsParams:
         "probe_n_verify": 1,
         "probe_agree_frac": 1.0,
         "probe_gen_temp": 0.4,
+        # Number of assert statements the exec probe generates per batch.
+        # 3 missed the hidden-test failures (matrix_transpose false-verified
+        # at 7b: self-asserts passed, 6 hidden tests failed). More asserts
+        # per batch = stricter world-grounded signal, darwin-evolvable.
+        "probe_n_asserts": 5,
     }
 
     def __init__(self):
@@ -1638,11 +1690,15 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         # attempt-0 self-verification probe (measured unreliable, default off).
         pp = self.physics_params
         t_low = float(pp.get("t_low", 0.15))
+        t_mid = float(pp.get("t_mid", 0.60))
         t_high = float(pp.get("t_high", 1.60))
         p_agree = None
         if attempt > 0:
-            probe_temp = t_high
-            print(f"[kai_bridge] attempt={attempt} -> exploratory T={t_high}",
+            # RAMP, not jump: first retry samples the mid competence window
+            # (where fixed-0.7 solves tasks the 0.15/1.6 tiers both miss),
+            # later retries go fully exploratory.
+            probe_temp = t_mid if attempt == 1 else t_high
+            print(f"[kai_bridge] attempt={attempt} -> exploratory T={probe_temp}",
                   file=sys.stderr, flush=True)
         elif os.environ.get("KAI_BRIDGE_PROBE", "off") == "on":
             p_temp, p_agree = self.vfe_state.probe_difficulty(
@@ -1746,9 +1802,45 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                               f"(agree={auto_agreement}) — returning at T={probe_temp}",
                               file=sys.stderr, flush=True)
                         break
-                    # Escalate: re-ask at exploratory temperature.
-                    options["temperature"] = float(pp.get("t_high", 1.60))
-                    probe_temp = float(pp.get("t_high", 1.60))
+                    # ── FUSED CLOSED LOOP (recall BEFORE escalation) ──
+                    # On the FIRST verification failure, compose the two
+                    # biggest measured edges: inject corpus memory for the
+                    # question and re-ask at the confident temperature before
+                    # overheating. If memory can supply the missing fact/pattern
+                    # (memory ruler: raw 0.429 -> fused 1.000), the loop closes
+                    # at t_low instead of gambling at t_mid/t_high.
+                    if auto_attempts == 1 and self.corpus is not None:
+                        try:
+                            hits = self.corpus.search(user_text,
+                                                      top_k=int(pp.get("recall_top_k", 3)))
+                            best = hits[0]["similarity"] if hits else 0.0
+                            if hits and best >= float(pp.get("recall_sim_gate", 0.45)):
+                                ctx = "[retrieved via fused auto self-recall]\n"
+                                ctx_chars = int(pp.get("recall_ctx_chars", 300))
+                                for h in hits[: int(pp.get("recall_top_k", 3))]:
+                                    ctx += f"  {h['path']} (sim={h['similarity']:.2f}): {h['text'][:ctx_chars]}\n"
+                                reask_msgs = [{"role": "system", "content": ctx}] + \
+                                    [convert_openai_to_ollama(m) for m in ollama_messages]
+                                options["temperature"] = float(pp.get("t_low", 0.15))
+                                probe_temp = float(pp.get("t_low", 0.15))
+                                ollama_body["options"] = options
+                                ollama_body["messages"] = reask_msgs
+                                print(f"[kai_bridge] auto-verify FAILED (agree={auto_agreement}) "
+                                      f"attempt {auto_attempts}/{auto_max} -> fused recall "
+                                      f"(best={best:.2f}) re-ask at T={probe_temp}",
+                                      file=sys.stderr, flush=True)
+                                action_turns = 0
+                                action_observations = []
+                                continue
+                        except Exception as e:
+                            print(f"[kai_bridge] fused recall warn: {e}",
+                                  file=sys.stderr, flush=True)
+                    # Escalate: ramp t_low -> t_mid (attempt 2) -> t_high (3+).
+                    nxt = (float(pp.get("t_mid", 0.60))
+                           if auto_attempts == 1
+                           else float(pp.get("t_high", 1.60)))
+                    options["temperature"] = nxt
+                    probe_temp = nxt
                     ollama_body["options"] = options
                     # Re-arm messages from the ORIGINAL conversation (the
                     # failed draft is NOT fed back — exploration is fresh,
