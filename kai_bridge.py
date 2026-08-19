@@ -912,7 +912,83 @@ class VFEState:
                         break
             frac = clean_batches / max(1, int(n_samples))
             verified = frac >= float(agree_frac)
-            detail = f"{frac:.2f}" if verified else f"{first_err}"
+            # ── ADVERSARIAL SECOND PASS (false-verification gate) ──
+            # When the standard batch passes FULLY clean, the answer claims
+            # to be trivially correct — but the probe's assert generation is
+            # stochastic and can miss the edge case the hidden tests enforce
+            # (reverse_words false-verified at 7b: 8 single-space asserts
+            # passed, hidden multi-space test failed). When the standard
+            # batch is all-clean, run a second adversarial batch that is
+            # EXPLICITLY told to break naive implementations (empty input,
+            # repeated/adjacent separators, leading/trailing whitespace,
+            # boundary values). The answer is verified only if the
+            # adversarial batch passes too. Costs nothing on the common
+            # path (only fires when the first pass is all-clean).
+            adv_on = int(self.physics_params.get("probe_adversarial", 1)) if \
+                hasattr(self, "physics_params") else 1
+            if verified and adv_on and frac >= 1.0:
+                adv_prompt = (
+                    "You are a HOSTILE test engineer trying to BREAK a "
+                    "candidate implementation. Given this task:\n"
+                    f"{spec[:700]}\n\n"
+                    "and the function/class name(s) "
+                    f"{', '.join(fn_names) if fn_names else 'you infer from the task'},\n"
+                    f"write {int(n_asserts)} assert statements that a NAIVE or "
+                    "SUBTLY-WRONG implementation would FAIL: boundary inputs "
+                    "(empty, single-element), repeated/adjacent separators, "
+                    "leading/trailing whitespace, very large inputs, and every "
+                    "edge case the task implies. Your asserts MUST call the "
+                    "exact name(s) listed above and encode the CORRECT expected "
+                    "behavior. Output ONLY the assert statements, one per line.")
+                adv_body = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": adv_prompt}],
+                    "stream": False,
+                    "options": {"temperature": gen_temp, "num_predict": 500},
+                }
+                adv_clean = False
+                adv_detail = "unknown"
+                for _retry in range(3):
+                    try:
+                        advd = call_ollama_chat(adv_body, timeout=120.0)
+                        adv_asserts = (advd.get("message", {}).get("content", "") or "").strip()
+                        m3 = re.search(r"```(?:python|py)?\s*\n(.*?)```",
+                                       adv_asserts, re.DOTALL)
+                        if m3:
+                            adv_asserts = m3.group(1)
+                        adv_lines = [ln.strip() for ln in adv_asserts.splitlines()
+                                     if ln.strip().startswith("assert")]
+                        if not adv_lines:
+                            adv_detail = "adversarial: no assert lines"
+                            continue
+                        adv_src = code + "\n\n" + "\n".join(adv_lines)
+                        ap = subprocess.run(
+                            [sys.executable, "-c", adv_src],
+                            capture_output=True, text=True, timeout=10)
+                        if ap.returncode == 0:
+                            adv_clean = True
+                            adv_detail = f"adversarial pass ({len(adv_lines)} asserts)"
+                            break
+                        adv_detail = (ap.stderr or ap.stdout or "").strip()[:200]
+                        # Probe-side syntax errors -> regenerate asserts
+                        if ("SyntaxError" in adv_detail
+                                or "IndentationError" in adv_detail):
+                            continue
+                        # Real test failure: answer failed an edge case.
+                        break
+                    except subprocess.TimeoutExpired:
+                        adv_detail = "adversarial: exec timeout"
+                        break
+                    except Exception as e:
+                        adv_detail = f"adversarial: {e}"[:200]
+                        break
+                if not adv_clean:
+                    verified = False
+                    detail = adv_detail
+                else:
+                    detail = f"{frac:.2f} + {adv_detail}"
+            else:
+                detail = f"{frac:.2f}" if verified else f"{first_err}"
             return verified, detail
         except Exception as e:
             print(f"[kai_bridge] verify_answer_exec warn: {e}",
@@ -1192,6 +1268,13 @@ class PhysicsParams:
         # at 7b: self-asserts passed, 6 hidden tests failed). More asserts
         # per batch = stricter world-grounded signal, darwin-evolvable.
         "probe_n_asserts": 5,
+        # Adversarial second-pass gate: when the standard assert batch passes
+        # FULLY clean (the false-verification blind spot — reverse_words
+        # verified at agree=1.00 with single-space asserts while the hidden
+        # multi-space test failed), run a second batch explicitly told to
+        # BREAK naive implementations. Answer verified only if it passes too.
+        # Fires only on the all-clean path; darwin-evolvable.
+        "probe_adversarial": 1,
     }
 
     def __init__(self):
