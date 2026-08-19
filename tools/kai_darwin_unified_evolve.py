@@ -9,17 +9,23 @@ vector across all three domains and scores it on BOTH rulers:
 
     fitness = w_code * code_pass1  +  w_mem * mem_pass
 
-  - code arm:  physics (attempt-gated escalation ramp t_low->t_mid->t_high)
-               on a hard 12-task subset of the code bench that INCLUDES
-               matrix_transpose (the only persistent failure; exercises the
-               t_mid window). pass@1 graded by hidden unit tests.
+  - code arm:  AUTO (LAYER 2c closed loop) by default — ONE external call
+               with no attempt index; the bridge self-verifies via the exec
+               probe and escalates internally, and its FINAL self-decided
+               answer is graded by hidden tests. This is the TRUE probe
+               ruler: the physics arm never exercises the probe, so probe
+               knobs evolved against it were unconstrained walks. The auto
+               arm makes probe_n_verify / probe_agree_frac / probe_n_asserts
+               / auto_max_attempts / t_low / t_mid / t_high all directly
+               fitness-bearing (pass@1 is the bridge's own decision quality).
+               Code subset = 12 hard tasks INCLUDING matrix_transpose.
   - mem arm:   recall (fused corpus memory) on the 21-task memory ruler,
                exact-match graded.
 
-A promotion must therefore improve code AND not regress memory (or vice
-versa) — generalization pressure across domains, which is the closest thing
-to AGI pressure the stack can measure. Archive in
-.axiom_state/darwin_unified_archive.json.
+A promotion must therefore improve the closed loop AND not regress memory
+(or vice versa) — generalization pressure across domains, which is the
+closest thing to AGI pressure the stack can measure. Archive in
+.axiom_state/darwin_unified_auto_archive.json.
 
 Loop (closes evolve -> params file -> live bridge -> both rulers):
   1. Mutate the unified vector (mtime-gated reload, no bridge restart).
@@ -41,7 +47,7 @@ from kai_recall_bench import grade_arm as mem_grade_arm, TASKS as MEM_TASKS  # n
 from kai_code_bench import grade_arm as code_grade_arm, TASKS as CODE_TASKS, BRIDGE_PORT  # noqa: E402
 
 PARAMS_PATH = os.path.join(ROOT, ".kai_physics_params.json")
-ARCHIVE_PATH = os.path.join(ROOT, ".axiom_state", "darwin_unified_archive.json")
+ARCHIVE_PATH = os.path.join(ROOT, ".axiom_state", "darwin_unified_auto_archive.json")
 
 # Evolvable knobs across all three domains: name -> (default, lo, hi).
 # Ints via _INT_KNOBS. Domain tags for logging.
@@ -146,14 +152,16 @@ def mutate(parent, rate):
 
 
 def evaluate(vec, model, port, label):
-    """Combined fitness: w_code * code_pass1 (physics arm, hard subset) +
-    w_mem * mem_pass (recall arm, full memory ruler)."""
+    """Combined fitness: w_code * code_pass1 (AUTO closed-loop arm, hard
+    subset) + w_mem * mem_pass (recall arm, full memory ruler). The auto
+    arm is the probe ruler — the bridge self-verifies and its final answer
+    is graded, so probe knobs are directly fitness-bearing."""
     write_params(vec)
     last_err = None
     for attempt in range(3):
         try:
-            code_res = code_grade_arm(f"{label}_code", CODE_SUBSET, "physics",
-                                      CODE_K, port, model=model)
+            code_res = code_grade_arm(f"{label}_code", CODE_SUBSET, "auto",
+                                      1, port, model=model)
             mem_res = mem_grade_arm(f"{label}_mem", "recall", port, model=model)
             fit = W_CODE * code_res["pass1"] + W_MEM * mem_res["pass"]
             return fit, code_res, mem_res
@@ -163,6 +171,22 @@ def evaluate(vec, model, port, label):
                   flush=True)
             time.sleep(15 * (attempt + 1))
     raise last_err
+
+
+def seed_from_live_params():
+    """Seed the initial parent vector from the CURRENT live params file —
+    today's validated state (t_low=0.2017, t_mid=0.61, probe relaxations,
+    darwin-promoted recall knobs) instead of the raw defaults."""
+    vec = dict(DEFAULT_VEC)
+    if os.path.exists(PARAMS_PATH):
+        try:
+            live = json.load(open(PARAMS_PATH))
+            for k in vec:
+                if k in live and isinstance(live[k], (int, float)):
+                    vec[k] = live[k]
+        except Exception:
+            pass
+    return vec
 
 
 def main():
@@ -178,17 +202,20 @@ def main():
     gen = arch.get("generation", 0)
     best_fit = arch.get("best_fitness", 0.0)
     mut_rate = arch.get("mutation_rate", 1.0)
-    best_vec = arch.get("best_vec") or dict(DEFAULT_VEC)
+    if gen == 0:
+        best_vec = arch.get("best_vec") or seed_from_live_params()
+    else:
+        best_vec = arch.get("best_vec") or dict(DEFAULT_VEC)
 
     print(f"== darwin unified-evolve  gen={gen}  best_fit={best_fit:.3f}  "
           f"mut_rate={mut_rate:.2f}  model={args.model}", flush=True)
-    print(f"   code subset: {len(CODE_SUBSET)} tasks (physics arm, K={CODE_K}, "
+    print(f"   code subset: {len(CODE_SUBSET)} tasks (AUTO closed-loop arm, "
           f"w={W_CODE})  |  memory ruler: {len(MEM_TASKS)} tasks (recall arm, "
           f"w={W_MEM})", flush=True)
 
     for g in range(gen + 1, gen + args.generations + 1):
         child = mutate(best_vec, mut_rate)
-        label = f"darwin_unified_g{g}"
+        label = f"darwin_unified_auto_g{g}"
         print(f"\n--- generation {g}  parent_fit={best_fit:.3f} "
               f"mut_rate={mut_rate:.2f} ---", flush=True)
         t0 = time.time()
