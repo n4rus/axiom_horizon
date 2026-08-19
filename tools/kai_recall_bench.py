@@ -1,104 +1,152 @@
 #!/usr/bin/env python3
+"""kai recall bench — memory-grounded ruler for the recall/fuse path.
+
+The code bench grades escalation (LAYER 2b/2c) but auto-recall (LAYER 1)
+never fires there: code answers are never thin. This bench grades the
+RECALL/FUSE path itself with tasks whose answers are IN the corpus but not
+in the model's parametric memory:
+
+  - Each task is a factual question whose gold answer is a distinctive
+    token present in a wiki-corpus entry (verified retrievable, sim >= 0.69).
+  - Greedy arm: raw ollama, NO corpus context -> measures parametric memory.
+  - Recall arm: kai bridge (injects corpus context via recall_top_k /
+    recall_ctx_chars knobs; thin-answer auto self-recall re-asks with the
+    retrieved context) -> measures the fused memory path.
+  - Grading: exact-match — the gold token must appear in the normalized
+    answer (case/punct-insensitive). No judge, no rubric: the answer either
+    contains the fact from memory or it does not.
+
+This is the ruler for darwin-evolve of the recall knobs (recall_top_k,
+recall_ctx_chars, recall_sim_gate, recall_thin_len).
 """
-kai_recall_bench.py — measure Kai's retained-memory recall quality.
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
 
-Queries a fixed topical benchmark set against the bridge /v1/recall endpoint
-and reports hit-rate (top-1 similarity threshold) + mean top-1 similarity.
-Run BEFORE a memory ingest for a baseline, then AGAIN after to measure the
-improvement. Results append to a JSONL history at .kai_recall_bench.jsonl.
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+sys.path.insert(0, HERE)
 
-Usage:  python3 tools/kai_recall_bench.py [--port 8765] [--top_k 3]
-        [--thr 0.50] [--pair <label>]
-"""
-import argparse, json, time, urllib.request, urllib.parse
+from kai_code_bench import _ollama_chat, _bridge_chat, BRIDGE_PORT  # noqa: E402
 
-RECORD = ".kai_recall_bench.jsonl"
+RECORD = os.path.join(ROOT, ".kai_recall_bench.jsonl")
 
-# Fixed, domain-spanning probe set. Targets facts batch-1 wiki should hold.
-QUERIES = [
-    # physics
-    "quantum entanglement measurement",
-    "black hole event horizon",
-    "entropy second law of thermodynamics",
-    "special relativity time dilation",
-    # history
-    "french revolution causes",
-    "world war two timeline",
-    "roman empire fall",
-    "industrial revolution steam power",
-    # geography / nature
-    "amazon rainforest biodiversity",
-    "sahara desert location",
-    "great barrier reef",
-    # tech / math
-    "neural network attention mechanism",
-    "prime number distribution",
-    "cryptographic hash function",
-    # chemistry / materials
-    "titanium alloy properties",
-    "solar photovoltaic electricity",
-    # project-specific — ONLY answerable now that full opencode history is in
-    "kai vfe tau time dilation controller",
-    "darwin self improvement generation",
-    "wiki batch one ingestion shards",
-    "bridge soul system personality memory",
-    "persistent ollama systemd unit",
+# (question, gold_token, source_article) — all gold tokens verified present
+# in the corpus (see the inventory probe: sim 0.69-0.89, gold in top-3 hit).
+TASKS = [
+    ("What does the abbreviation TAI stand for?", ["International Atomic Time"], "international_atomic_time"),
+    ("The Beaulieu Mine was a gold mining operation located near which city?", ["Yellowknife"], "beaulieu_mine"),
+    ("Wrox Press, the computer book publisher, was originally based in which English city?", ["Birmingham"], "wrox_press"),
+    ("The Economy Act of 1933 was officially titled the Act of which date?", ["March 20, 1933"], "economy_act_of_march_20_1933"),
+    ("Aethalura is a genus of insects in which family?", ["Geometridae"], "aethalura_family"),
+    ("Decebalus, also called Diurpaneus, was the last king of which ancient people?", ["Dacian", "Dacia"], "decebalus"),
+    ("In Germanic mythology, Gram is the magical sword used by which hero?", ["Sigurd"], "gram_mythology"),
+    ("Pāramitā is a Buddhist term often translated as what?", ["perfection"], "p_ramit"),
+    ("Jerome A. Hammersmith was a political figure in which Canadian province?", ["Saskatchewan"], "jerome_hammersmith"),
+    ("Greatorex was an electoral division in which Australian territory?", ["Northern Territory"], "electoral_division_of_greatorex"),
+    ("What does CIM stand for in the manufacturing context?", ["Computer-integrated"], "computer_integrated_manufacturing"),
+    ("Claudius Mamertinus was an official in which ancient empire?", ["Roman"], "claudius_mamertinus"),
+    ("The Hardy-Littlewood Tauberian theorem is a theorem in which field?", ["analysis"], "hardy_littlewood_tauberian_theorem"),
+    ("The four-barred grey moth belongs to which genus?", ["Aethalura"], "aethalura_genus"),
+    # ── Harder tier: facts deeper in entries / at marginal sim, so the fuse
+    #    knobs (top_k, ctx_chars, sim_gate) actually discriminate. All gold
+    #    tokens verified present in the corpus at sim >= 0.68.
+    ("What year was Wrox Press established?", ["1992"], "wrox_press_year"),
+    ("In what year did the Beaulieu Mine enter production?", ["1947"], "beaulieu_mine_year"),
+    ("The ingrailed clay moth belongs to which family?", ["Noctuidae"], "ingrailed_clay"),
+    ("The viscous stress tensor is used to model what?", ["continuum", "stress"], "viscous_stress_tensor"),
+    ("Which hero used the sword Gram in Germanic legend?", ["Sigurd"], "gram_mythology_hero"),
+    ("Computer-integrated manufacturing is an approach using what to control the entire production process?", ["computers"], "computer_integrated_manufacturing_ctrl"),
+    ("Plasma cosmology is a non-standard theory of what?", ["cosmology"], "non_standard_cosmology"),
 ]
 
 
-def recall(query: str, top_k: int, port: int) -> dict:
-    url = f"http://127.0.0.1:{port}/v1/recall?q=" \
-          f"{urllib.parse.quote(query)}&top_k={top_k}"
-    with urllib.request.urlopen(url, timeout=30) as r:
-        return json.load(r)
+def normalize(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def grade(answer: str, gold) -> bool:
+    """Exact-match: any gold token (normalized) must appear in the answer."""
+    if isinstance(gold, str):
+        gold = [gold]
+    na = normalize(answer)
+    return any(normalize(g) in na for g in gold)
+
+
+def grade_arm(label: str, mode: str, port: int,
+              model: str = "qwen2.5-coder:3b") -> dict:
+    ledger_path = RECORD + f".{label}.ledger.jsonl"
+    done = {}
+    if os.path.exists(ledger_path):
+        for line in open(ledger_path):
+            try:
+                e = json.loads(line)
+                done[e["name"]] = e
+            except Exception:
+                pass
+    passed = 0
+    per_task = []
+    t0 = time.time()
+    ledger = open(ledger_path, "a")
+    for ti, (q, gold, src) in enumerate(TASKS, 1):
+        name = src
+        if name in done:
+            e = done[name]
+            per_task.append(e)
+            if e["pass"]:
+                passed += 1
+            print(f"  [{ti}/{len(TASKS)}] {name:42s} (resumed) pass={e['pass']}")
+            continue
+        if mode == "greedy":
+            ans = _ollama_chat(model, q, 0.0, 120)
+        else:  # recall — bridge fused memory path, NO external attempt
+            ans, phys = _bridge_chat(q, 120, port, attempt=0, model=model)
+        ok = grade(ans, gold)
+        if ok:
+            passed += 1
+        entry = {"name": name, "pass": ok, "answer": ans[:200], "gold": gold,
+                 "question": q, "mode": mode, "model": model}
+        per_task.append(entry)
+        ledger.write(json.dumps(entry) + "\n")
+        ledger.flush()
+        print(f"  [{ti}/{len(TASKS)}] {name:42s} pass={ok} | ans: {ans[:80]!r}")
+    ledger.close()
+    n = len(TASKS)
+    res = {
+        "t": time.time(), "label": label, "mode": mode, "worker": model,
+        "tasks": n, "elapsed_s": round(time.time() - t0, 1),
+        "pass": round(passed / n, 3), "solved": passed,
+        "per_task": per_task,
+    }
+    return res
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--top_k", type=int, default=3)
-    ap.add_argument("--thr", type=float, default=0.50, help="top-1 sim hit thr")
-    ap.add_argument("--pair", default="", help="label for paired delta logging")
+    ap = argparse.ArgumentParser(description="memory-grounded recall bench")
+    ap.add_argument("--label", default="recall_bench")
+    ap.add_argument("--arms", default="greedy,recall")
+    ap.add_argument("--model", default="qwen2.5-coder:3b")
+    ap.add_argument("--port", type=int, default=BRIDGE_PORT)
     args = ap.parse_args()
 
-    hits, sims, misses = 0, [], []
-    for q in QUERIES:
-        try:
-            d = recall(q, args.top_k, args.port)
-            rec = d.get("recalled", [])
-            top = rec[0]["similarity"] if rec else 0.0
-            sims.append(top)
-            if top >= args.thr:
-                hits += 1
-            else:
-                misses.append([q, round(top, 3)])
-        except Exception as e:
-            print(f"  [ER] {q}: {e}")
-            misses.append([q, 0.0]); sims.append(0.0)
-
-    n = len(QUERIES)
-    hit_rate = hits / n
-    mean_top = sum(sims) / n
-    p50 = sorted(sims)[n // 2] if sims else 0.0
-    res = {
-        "t": time.time(), "pair": args.pair,
-        "n": n, "thr": args.thr,
-        "hit_rate": round(hit_rate, 4), "mean_top1_sim": round(mean_top, 4),
-        "median_top1_sim": round(p50, 4),
-        "misses": misses, "top1": [round(s, 3) for s in sims],
-    }
-    with open(BRIDGE if False else RECORD, "a") as f:
-        f.write(json.dumps(res) + "\n")
-
-    print(f"\n==== kai recall bench  pair='{args.pair}'  n={n}  thr={args.thr:.2f} ====")
-    print(f"  hit_rate        {hit_rate:.3f}  ({hits}/{n} top-1 above {args.thr})")
-    print(f"  mean top1 sim   {mean_top:.3f}")
-    print(f"  median top1 sim {p50:.3f}")
-    if misses:
-        print("  misses:")
-        for q, s in misses:
-            print(f"    [{s:.2f}] {q}")
-    print(f"  -> appended to {RECORD}\n")
+    print(f"==== kai recall bench  label='{args.label}'  model={args.model}  "
+          f"arms={args.arms}")
+    print(f"     {len(TASKS)} tasks, gold tokens from wiki corpus, "
+          f"exact-match grading\n")
+    for mode in [m.strip() for m in args.arms.split(",")]:
+        print(f"--- {mode} ---")
+        res = grade_arm(f"{args.label}_{mode}", mode, args.port, model=args.model)
+        rec = json.dumps(res)
+        with open(RECORD, "a") as f:
+            f.write(rec + "\n")
+        print(f"  {mode}: pass={res['pass']} solved={res['solved']}/{res['tasks']} "
+              f"({res['elapsed_s']}s)")
 
 
 if __name__ == "__main__":

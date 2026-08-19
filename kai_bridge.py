@@ -1581,14 +1581,23 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
             messages.insert(0, {"role": "system", "content": SOUL_SYSTEM})
 
         # ── Corpus context injection ──────────────────────────────────
-        # Search attractor for relevant directories, inject as system context
+        # Search attractor for relevant directories, inject as system context.
+        # Knobs are darwin-evolvable via the live params file: recall_top_k
+        # (how many hits), recall_ctx_chars (per-hit context budget), and
+        # recall_sim_gate (min similarity to inject — the FUSE gate, so a
+        # tuned gate prevents irrelevant memory from entering the prompt).
+        # This is the fuse path that the memory-grounded ruler grades.
         user_text = " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
         if user_text.strip():
-            hits = self.corpus.search(user_text, top_k=3)
+            rk = max(1, int(self.physics_params.get("recall_top_k", 3)))
+            rc = max(50, int(self.physics_params.get("recall_ctx_chars", 300)))
+            rg = float(self.physics_params.get("recall_sim_gate", 0.45))
+            hits = self.corpus.search(user_text, top_k=rk)
+            hits = [h for h in hits if h["similarity"] >= rg]
             if hits:
                 context_lines = ["[Corpus context from attractor memory]"]
-                for h in hits:
-                    context_lines.append(f"  {h['path']} (sim={h['similarity']}): {h['text'][:200]}")
+                for h in hits[:rk]:
+                    context_lines.append(f"  {h['path']} (sim={h['similarity']}): {h['text'][:rc]}")
                 context_str = "\n".join(context_lines[:5])
                 print(f"[kai_bridge] attractor hits: {[h['path'] for h in hits]}", file=sys.stderr)
                 # Inject as a system message before other messages
