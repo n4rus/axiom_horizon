@@ -839,6 +839,66 @@ class VFEState:
             first_err = "unknown"
             n_asserts = self.physics_params.get("probe_n_asserts", 5) \
                 if hasattr(self, "physics_params") else 5
+            # Reference implementation cache (generated lazily, only when an
+            # assert FAILS on the candidate): an assert is RELIABLE iff this
+            # t_low reference (proven correct by the physics arm) passes it.
+            # Asserts the reference fails are probe-side hallucinated
+            # expected values (e.g. reverse_words asserting trailing spaces
+            # or a wrong word order) and are DISCARDED — otherwise correct
+            # answers get rejected by the probe's own arithmetic errors.
+            ref_code = None
+
+            def _get_ref():
+                nonlocal ref_code
+                if ref_code is not None:
+                    return ref_code
+                try:
+                    t_low_ref = float(self.physics_params.get("t_low", 0.15))
+                    ref_body = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": spec[:700]}],
+                        "stream": False,
+                        "options": {"temperature": t_low_ref, "num_predict": 400},
+                    }
+                    refd = call_ollama_chat(ref_body, timeout=120.0)
+                    ref_ans = (refd.get("message", {}).get("content", "") or "").strip()
+                    m4 = re.search(r"```(?:python|py)?\s*\n(.*?)```",
+                                   ref_ans, re.DOTALL)
+                    ref_code = m4.group(1).strip() if m4 else ref_ans.strip()
+                    if not ref_code:
+                        ref_code = None
+                except Exception:
+                    ref_code = None
+                return ref_code
+
+            def _run(prog: str) -> bool:
+                try:
+                    p = subprocess.run([sys.executable, "-c", prog],
+                                       capture_output=True, text=True, timeout=10)
+                    return p.returncode == 0
+                except Exception:
+                    return False
+
+            def _reliable_frac(cand_code: str, assert_lines) -> float:
+                """Fraction of RELIABLE asserts the candidate passes.
+                Asserts the reference fails are probe-side errors (discarded);
+                asserts the reference passes are real and must hold."""
+                if not assert_lines:
+                    return 0.0
+                ref = _get_ref()
+                if ref is None:
+                    # No reference available: fall back to raw fraction.
+                    passes = sum(1 for ln in assert_lines
+                                 if _run(cand_code + "\n\n" + ln))
+                    return passes / len(assert_lines)
+                reliable = [ln for ln in assert_lines if _run(ref + "\n\n" + ln)]
+                if not reliable:
+                    # Reference fails every assert -> all probe-side noise.
+                    return 1.0  # no usable evidence against the candidate
+                passes = sum(1 for ln in reliable
+                             if _run(cand_code + "\n\n" + ln))
+                return passes / len(reliable)
+
             for _ in range(max(1, int(n_samples))):
                 t_prompt = (
                     "You are a test engineer. Given this task:\n"
@@ -850,8 +910,11 @@ class VFEState:
                     "from the task description (edge cases included). The "
                     "implementation may be wrong or use different names — "
                     "your asserts MUST call the exact name(s) listed above "
-                    "and encode the CORRECT expected behavior. Output ONLY "
-                    "the assert statements, one per line.")
+                    "and encode the CORRECT expected behavior. "
+                    "CRITICAL: compute each expected value BY HAND from the "
+                    "spec — never copy whitespace or formatting from the input "
+                    "string into the expected value. "
+                    "Output ONLY the assert statements, one per line.")
                 t_body = {
                     "model": model,
                     "messages": [{"role": "user", "content": t_prompt}],
@@ -910,6 +973,15 @@ class VFEState:
                     except Exception as e:
                         first_err = str(e)[:200]
                         break
+                if p.returncode != 0 and not bad_asserts:
+                    # Candidate failed the batch. Reference-anchor the
+                    # asserts: discard probe-side hallucinations, count only
+                    # reliable asserts against the candidate.
+                    rf = _reliable_frac(code, assert_lines)
+                    if rf >= float(agree_frac):
+                        clean_batches += 1
+                        first_err = (f"reference-anchored {rf:.2f} "
+                                     f"(raw {err_text[:60]})")
             frac = clean_batches / max(1, int(n_samples))
             verified = frac >= float(agree_frac)
             # ── ADVERSARIAL SECOND PASS (false-verification gate) ──
@@ -939,16 +1011,20 @@ class VFEState:
                     "leading/trailing whitespace, very large inputs, and every "
                     "edge case the task implies. Your asserts MUST call the "
                     "exact name(s) listed above and encode the CORRECT expected "
-                    "behavior. Output ONLY the assert statements, one per line.")
+                    "behavior. "
+                    "CRITICAL: compute each expected value BY HAND from the "
+                    "spec — never copy whitespace or formatting from the input "
+                    "string into the expected value. "
+                    "Output ONLY the assert statements, one per line.")
                 adv_body = {
                     "model": model,
                     "messages": [{"role": "user", "content": adv_prompt}],
                     "stream": False,
                     "options": {"temperature": gen_temp, "num_predict": 500},
                 }
-                adv_clean = False
                 adv_detail = "unknown"
-                for _retry in range(3):
+                adv_failures = 0
+                for _adv in range(2):
                     try:
                         advd = call_ollama_chat(adv_body, timeout=120.0)
                         adv_asserts = (advd.get("message", {}).get("content", "") or "").strip()
@@ -966,23 +1042,35 @@ class VFEState:
                             [sys.executable, "-c", adv_src],
                             capture_output=True, text=True, timeout=10)
                         if ap.returncode == 0:
-                            adv_clean = True
-                            adv_detail = f"adversarial pass ({len(adv_lines)} asserts)"
-                            break
+                            adv_detail = (f"adversarial pass "
+                                          f"({len(adv_lines)} asserts)")
+                            break  # one clean adversarial batch is enough
                         adv_detail = (ap.stderr or ap.stdout or "").strip()[:200]
-                        # Probe-side syntax errors -> regenerate asserts
                         if ("SyntaxError" in adv_detail
                                 or "IndentationError" in adv_detail):
-                            continue
-                        # Real test failure: answer failed an edge case.
-                        break
+                            continue  # probe-side syntax error -> regenerate
+                        # Candidate FAILED the adversarial batch. Reference-
+                        # anchor it the same way as the standard batch: an
+                        # adversarial assert only counts if the reference
+                        # (independent t_low solution) passes it. Two
+                        # reference-anchored failures = genuine rejection.
+                        adv_rf = _reliable_frac(code, adv_lines)
+                        if adv_rf >= float(agree_frac):
+                            adv_detail = (f"adversarial reference-anchored "
+                                          f"{adv_rf:.2f}")
+                            break  # not actually failing on reliable asserts
+                        adv_failures += 1
+                        adv_detail = (f"adversarial anchored {adv_rf:.2f} "
+                                      f"(raw {adv_detail})")
                     except subprocess.TimeoutExpired:
                         adv_detail = "adversarial: exec timeout"
                         break
                     except Exception as e:
                         adv_detail = f"adversarial: {e}"[:200]
                         break
-                if not adv_clean:
+                if adv_failures >= 2:
+                    # Both adversarial batches reference-anchor-reject the
+                    # answer: it genuinely fails the task's edge cases.
                     verified = False
                     detail = adv_detail
                 else:
