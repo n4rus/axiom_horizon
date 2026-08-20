@@ -172,6 +172,8 @@ TASKS = [
             "assert reverse_words('a') == 'a'\n"
             "assert reverse_words('') == ''\n"
             "assert reverse_words('two words') == 'words two'\n"
+            "assert reverse_words('a  b   c') == 'c b a'\n"
+            "assert reverse_words('  multiple    spaces  here  ') == 'here spaces multiple'\n"
         ),
     },
     {
@@ -223,6 +225,7 @@ TASKS = [
             "assert is_anagram('rat', 'car') == False\n"
             "assert is_anagram('Hello World', 'World Hello') == True\n"
             "assert is_anagram('', '') == True\n"
+            "assert is_anagram('LiStEn', 'sIlEnT') == True\n"
         ),
     },
     {
@@ -439,6 +442,9 @@ CAPACITY_TASKS = [
             "c3.put(1,1); c3.put(2,2); c3.put(3,3)\n"
             "assert c3.get(1) == 1\n"
             "c3.put(4,4); assert c3.get(2) == -1 and c3.get(1) == 1 and c3.get(3) == 3\n"
+            "c4 = LRUCache(2)\n"
+            "c4.put(1,1); c4.put(2,2); c4.put(1,9)  # put-existing refreshes recency\n"
+            "c4.put(3,3); assert c4.get(2) == -1 and c4.get(1) == 9 and c4.get(3) == 3\n"
         ),
     },
     {
