@@ -205,9 +205,14 @@ def main():
     ap.add_argument("--tier", choices=["base", "capacity"], default="base",
                     help="code ruler tier: base=12 hard subset (saturating), "
                          "capacity=15 stateful/adversarial tasks (headroom)")
+    ap.add_argument("--code-tasks", type=int, default=None,
+                    help="cap the code subset to the first N tasks "
+                         "(auto arm is ~15 min/task at 7b; keep A4 affordable)")
     args = ap.parse_args()
     random.seed(args.seed)
     code_tasks = CAP_SUBSET if args.tier == "capacity" else CODE_SUBSET
+    if args.code_tasks:
+        code_tasks = code_tasks[: args.code_tasks]
 
     arch = load_archive()
     gen = arch.get("generation", 0)
