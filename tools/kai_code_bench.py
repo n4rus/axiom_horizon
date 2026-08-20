@@ -409,6 +409,254 @@ TASKS = [
 K_DEFAULT = 4
 MAX_TOKENS = 400
 
+# ── Capacity tier: harder multi-step/stateful tasks ───────────────────────
+# The original 29 tasks saturate at pass@1 ~1.0 on 7b/16b — no headroom for
+# darwin or the probe to optimize. These tasks are multi-step/stateful
+# (graphs, DP with adversarial edge cases, stateful LRU, expression parsing)
+# with adversarial hidden tests designed to break naive implementations
+# (empty inputs, single elements, duplicates, unary minus, performance).
+# Every expected value below was validated against a known-correct reference
+# implementation (tools/validate_tier.py logic) BEFORE entering the ruler.
+CAPACITY_TASKS = [
+    {
+        "name": "lru_cache",
+        "prompt": ("Write a Python class LRUCache with __init__(capacity), "
+                   "get(key) and put(key, value). get returns -1 if the key "
+                   "is absent. put inserts/updates; if the cache exceeds "
+                   "capacity, evict the LEAST RECENTLY USED key. Accessing "
+                   "a key via get refreshes its recency."),
+        "tests": (
+            "c = LRUCache(2)\n"
+            "c.put(1,1); c.put(2,2)\n"
+            "assert c.get(1) == 1\n"
+            "c.put(3,3); assert c.get(2) == -1\n"
+            "c.put(4,4); assert c.get(1) == -1\n"
+            "assert c.get(3) == 3 and c.get(4) == 4\n"
+            "c2 = LRUCache(1)\n"
+            "c2.put(1,1); assert c2.get(1) == 1\n"
+            "c2.put(2,2); assert c2.get(1) == -1 and c2.get(2) == 2\n"
+            "c3 = LRUCache(3)\n"
+            "c3.put(1,1); c3.put(2,2); c3.put(3,3)\n"
+            "assert c3.get(1) == 1\n"
+            "c3.put(4,4); assert c3.get(2) == -1 and c3.get(1) == 1 and c3.get(3) == 3\n"
+        ),
+    },
+    {
+        "name": "can_finish",
+        "prompt": ("Write a Python function can_finish(n, prerequisites) that "
+                   "takes n courses numbered 0..n-1 and a list of pairs "
+                   "[a,b] meaning course a requires course b first, and "
+                   "returns True if all courses can be finished (no cycle)."),
+        "tests": (
+            "assert can_finish(2, [[1,0]]) == True\n"
+            "assert can_finish(2, [[1,0],[0,1]]) == False\n"
+            "assert can_finish(4, [[1,0],[2,1],[3,2]]) == True\n"
+            "assert can_finish(3, [[0,1],[1,2],[2,0]]) == False\n"
+            "assert can_finish(5, []) == True\n"
+            "assert can_finish(1, [[0,0]]) == False\n"
+            "assert can_finish(4, [[1,0],[2,1],[3,1],[0,3]]) == False\n"
+        ),
+    },
+    {
+        "name": "lis",
+        "prompt": ("Write a Python function lis(nums) that returns the length "
+                   "of the longest strictly increasing subsequence."),
+        "tests": (
+            "assert lis([10,9,2,5,3,7,101,18]) == 4\n"
+            "assert lis([]) == 0\n"
+            "assert lis([1]) == 1\n"
+            "assert lis([3,2,1]) == 1\n"
+            "assert lis([1,1,1]) == 1\n"
+            "assert lis([0,1,0,3,2,3]) == 4\n"
+            "assert lis([7,7,7,7,7,7,7]) == 1\n"
+        ),
+    },
+    {
+        "name": "word_ladder",
+        "prompt": ("Write a Python function word_ladder(begin, end, words) "
+                   "that returns the length of the shortest transformation "
+                   "sequence from begin to end where each step changes ONE "
+                   "letter into another word in the words list, and the "
+                   "length counts begin. Return 0 if unreachable."),
+        "tests": (
+            "assert word_ladder('hit','cog',['hot','dot','dog','lot','log','cog']) == 5\n"
+            "assert word_ladder('hit','cog',['hot','dot','dog','lot','log']) == 0\n"
+            "assert word_ladder('a','c',['b','c']) == 2\n"
+            "assert word_ladder('same','same',[]) == 1\n"
+            "assert word_ladder('toon','plea',['poon','plee','same','poie','plea','plie','poin']) == 7\n"
+        ),
+    },
+    {
+        "name": "edit_distance",
+        "prompt": ("Write a Python function edit_distance(a, b) that returns "
+                   "the minimum number of operations (insert, delete, "
+                   "replace) to convert a into b."),
+        "tests": (
+            "assert edit_distance('horse','ros') == 3\n"
+            "assert edit_distance('intention','execution') == 5\n"
+            "assert edit_distance('','') == 0\n"
+            "assert edit_distance('abc','') == 3\n"
+            "assert edit_distance('','xyz') == 3\n"
+            "assert edit_distance('a','a') == 0\n"
+            "assert edit_distance('abc','abc') == 0\n"
+        ),
+    },
+    {
+        "name": "spiral_order",
+        "prompt": ("Write a Python function spiral_order(matrix) that returns "
+                   "the elements of a rectangular matrix in clockwise spiral "
+                   "order."),
+        "tests": (
+            "assert spiral_order([[1,2,3],[4,5,6],[7,8,9]]) == [1,2,3,6,9,8,7,4,5]\n"
+            "assert spiral_order([[1,2,3,4],[5,6,7,8],[9,10,11,12]]) == [1,2,3,4,8,12,11,10,9,5,6,7]\n"
+            "assert spiral_order([]) == []\n"
+            "assert spiral_order([[1]]) == [1]\n"
+            "assert spiral_order([[1,2]]) == [1,2]\n"
+            "assert spiral_order([[1],[2],[3]]) == [1,2,3]\n"
+            "assert spiral_order([[1,2,3]]) == [1,2,3]\n"
+        ),
+    },
+    {
+        "name": "num_decodings",
+        "prompt": ("Write a Python function num_decodings(s) that counts the "
+                   "number of ways to decode a digit string where 'A'..'Z' "
+                   "map to 1..26. Return 0 if the string cannot be decoded."),
+        "tests": (
+            "assert num_decodings('12') == 2\n"
+            "assert num_decodings('226') == 3\n"
+            "assert num_decodings('0') == 0\n"
+            "assert num_decodings('06') == 0\n"
+            "assert num_decodings('10') == 1\n"
+            "assert num_decodings('100') == 0\n"
+            "assert num_decodings('101') == 1\n"
+            "assert num_decodings('1'*50) == 20365011074\n"
+        ),
+    },
+    {
+        "name": "is_bipartite",
+        "prompt": ("Write a Python function is_bipartite(graph) that takes an "
+                   "undirected graph as an adjacency list and returns True if "
+                   "it can be colored with 2 colors so no edge joins same-"
+                   "colored vertices (the graph may be disconnected)."),
+        "tests": (
+            "assert is_bipartite([[1,3],[0,2],[1,3],[0,2]]) == True\n"
+            "assert is_bipartite([[1,2,3],[0,2],[0,1,3],[0,2]]) == False\n"
+            "assert is_bipartite([[],[2],[1]]) == True\n"
+            "assert is_bipartite([[1],[0]]) == True\n"
+            "assert is_bipartite([]) == True\n"
+            "assert is_bipartite([[]]) == True\n"
+            "assert is_bipartite([[1,2],[0,2],[0,1]]) == False\n"
+            "assert is_bipartite([[1,2],[0,2],[0,1],[4],[3]]) == False\n"
+        ),
+    },
+    {
+        "name": "max_area",
+        "prompt": ("Write a Python function max_area(heights) that returns the "
+                   "maximum area of water a container can hold, where each "
+                   "element is a vertical line height and the container is "
+                   "bounded by two lines and the x-axis."),
+        "tests": (
+            "assert max_area([1,8,6,2,5,4,8,3,7]) == 49\n"
+            "assert max_area([1,1]) == 1\n"
+            "assert max_area([2,1]) == 1\n"
+            "assert max_area([1,2,1]) == 2\n"
+            "assert max_area([4,3,2,1,4]) == 16\n"
+            "assert max_area([1,2,4,3]) == 4\n"
+        ),
+    },
+    {
+        "name": "group_anagrams",
+        "prompt": ("Write a Python function group_anagrams(words) that groups "
+                   "anagrams together and returns a list of groups (order of "
+                   "groups and order within groups does not matter)."),
+        "tests": (
+            "res = group_anagrams(['eat','tea','tan','ate','nat','bat'])\n"
+            "assert sorted([sorted(g) for g in res]) == [['ate','eat','tea'],['bat'],['nat','tan']]\n"
+            "assert sorted([sorted(g) for g in group_anagrams([''])]) == [['']]\n"
+            "assert sorted([sorted(g) for g in group_anagrams(['a'])]) == [['a']]\n"
+            "assert sorted([sorted(g) for g in group_anagrams(['ab','ba','ab'])]) == [['ab','ab','ba']]\n"
+        ),
+    },
+    {
+        "name": "find_duplicate",
+        "prompt": ("Write a Python function find_duplicate(nums) that takes a "
+                   "list of n+1 integers in range [1, n] with exactly one "
+                   "duplicate and returns that duplicate, using O(1) extra "
+                   "space."),
+        "tests": (
+            "assert find_duplicate([1,3,4,2,2]) == 2\n"
+            "assert find_duplicate([3,1,3,4,2]) == 3\n"
+            "assert find_duplicate([1,1]) == 1\n"
+            "assert find_duplicate([2,2,2,2,2]) == 2\n"
+            "assert find_duplicate([1,2,3,4,5,6,7,8,9,10,10]) == 10\n"
+            "assert find_duplicate([2,5,9,6,9,3,8,9,7,1]) == 9\n"
+        ),
+    },
+    {
+        "name": "lps",
+        "prompt": ("Write a Python function lps(s) that returns the longest "
+                   "palindromic substring of s (any one if several exist)."),
+        "tests": (
+            "assert lps('babad') in ('bab','aba')\n"
+            "assert lps('cbbd') == 'bb'\n"
+            "assert lps('a') == 'a'\n"
+            "assert lps('ac') in ('a','c')\n"
+            "assert lps('aaaa') == 'aaaa'\n"
+            "assert lps('') == ''\n"
+            "assert lps('racecar') == 'racecar'\n"
+        ),
+    },
+    {
+        "name": "num_islands",
+        "prompt": ("Write a Python function num_islands(grid) that takes a 2D "
+                   "grid of '1' (land) and '0' (water) and returns the number "
+                   "of islands, where islands connect orthogonally (up/down/"
+                   "left/right, NOT diagonally)."),
+        "tests": (
+            "assert num_islands([['1','1','1','1','0'],['1','1','0','1','0'],['1','1','0','0','0'],['0','0','0','0','0']]) == 1\n"
+            "assert num_islands([['1','1','0','0','0'],['1','1','0','0','0'],['0','0','1','0','0'],['0','0','0','1','1']]) == 3\n"
+            "assert num_islands([['0']]) == 0\n"
+            "assert num_islands([['1']]) == 1\n"
+            "assert num_islands([]) == 0\n"
+            "assert num_islands([['1','0','1']]) == 2\n"
+            "assert num_islands([['1','0'],['0','1']]) == 2\n"
+        ),
+    },
+    {
+        "name": "word_break",
+        "prompt": ("Write a Python function word_break(s, words) that returns "
+                   "True if s can be segmented into a space-separated "
+                   "sequence of dictionary words (words may be reused)."),
+        "tests": (
+            "assert word_break('leetcode',['leet','code']) == True\n"
+            "assert word_break('applepenapple',['apple','pen']) == True\n"
+            "assert word_break('catsandog',['cats','dog','sand','and','cat']) == False\n"
+            "assert word_break('',[]) == True\n"
+            "assert word_break('aaaaaaa',['aaaa','aaa']) == True\n"
+            "assert word_break('bb',['a','b','bbb']) == True\n"
+            "assert word_break('aaaaaaa',['aaaa','aa']) == False\n"
+        ),
+    },
+    {
+        "name": "calculator",
+        "prompt": ("Write a Python function calculate(s) that evaluates a "
+                   "string expression containing +, -, *, /, parentheses and "
+                   "spaces. Division truncates toward zero. Handle unary "
+                   "minus. Return the integer result."),
+        "tests": (
+            "assert calculate('1 + 1') == 2\n"
+            "assert calculate(' 2-1 + 2 ') == 3\n"
+            "assert calculate('(1+(4+5+2)-3)+(6+8)') == 23\n"
+            "assert calculate('3*2+2') == 8\n"
+            "assert calculate('14-3*2') == 8\n"
+            "assert calculate(' 2*3-4/2 ') == 4\n"
+            "assert calculate('-2+3') == 1\n"
+            "assert calculate('2-(-3)') == 5\n"
+            "assert calculate('(7)-(0)+(4)') == 11\n"
+        ),
+    },
+]
+
 
 def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str:
     body = {
@@ -623,11 +871,21 @@ def main():
                     help="coder model for all arms (default qwen2.5-coder:3b)")
     ap.add_argument("--arms", default="greedy,fixed,physics",
                     help="comma-separated arms to run")
+    ap.add_argument("--tier", choices=["base", "capacity", "all"],
+                    default="base",
+                    help="task tier: base=29 saturating tasks, "
+                         "capacity=15 harder stateful/adversarial tasks, "
+                         "all=both")
     args = ap.parse_args()
 
-    tasks = TASKS[: args.tasks]
+    if args.tier == "capacity":
+        tasks = CAPACITY_TASKS[: args.tasks]
+    elif args.tier == "all":
+        tasks = (TASKS + CAPACITY_TASKS)[: args.tasks]
+    else:
+        tasks = TASKS[: args.tasks]
     print(f"==== kai code bench  label='{args.label}'  model={args.model}  "
-          f"tasks={len(tasks)}  K={args.k}  arms={args.arms}")
+          f"tier={args.tier}  tasks={len(tasks)}  K={args.k}  arms={args.arms}")
     print(f"     objective grading (hidden unit tests), no judge, no rubric\n")
 
     results = {}
