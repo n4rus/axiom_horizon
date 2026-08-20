@@ -1168,11 +1168,12 @@ class VFEState:
                     # same-model reference shared the candidate's blind spot,
                     # so reference-anchoring self-confirmed a WRONG answer.
                     # Mutate the reference (skip-last-iteration / skip-first-
-                    # edge) and require the assert set to KILL a minimum
-                    # fraction of mutants. Low kill-rate = the asserts don't
-                    # discriminate real bugs = verification untrustworthy ->
-                    # escalate instead of trusting. Fires only on this
-                    # all-clean path (the risky one); darwin-evolvable.
+                    # edge / skip-last-index) and require the assert set to
+                    # KILL a minimum fraction of mutants. Low kill-rate = the
+                    # asserts don't discriminate real bugs = verification
+                    # untrustworthy -> escalate instead of trusting. Fires
+                    # only on this all-clean path (the risky one); darwin-
+                    # evolvable.
                     mut_on = int(self.physics_params.get("probe_mut", 1)) if \
                         hasattr(self, "physics_params") else 1
                     if mut_on:
