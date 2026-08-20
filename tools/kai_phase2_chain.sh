@@ -24,26 +24,48 @@ DARWIN_GENS=3
 
 echo "== kai_phase2_chain start $(date) ==" | tee -a /tmp/kai_phase2.log
 
-# 0) Wait for A2 to fully finish (all four arms).
+# helper: assert a ledger reached N lines before continuing
+expect_ledger() {
+  local glob="$1" n="$2"
+  for i in $(seq 1 120); do
+    local total=0 lines=0
+    for f in $glob; do
+      [ -f "$f" ] && lines=$((lines + $(wc -l < "$f")))
+    done
+    if [ "$lines" -ge "$n" ]; then return 0; fi
+    # bail if the producing process is gone AND ledger is short
+    if ! pgrep -f "${3:-kai_code_bench}" > /dev/null && [ "$lines" -lt "$n" ]; then
+      echo "  EXPECT_FAIL: $glob has $lines/$n lines and process gone" | tee -a /tmp/kai_phase2.log
+      return 1
+    fi
+    sleep 30
+  done
+  echo "  EXPECT_TIMEOUT: $glob never reached $n lines" | tee -a /tmp/kai_phase2.log
+  return 1
+}
+
+# 0) Wait for A2 to fully finish (all four arms). Only the FOUR original
+# cap7b ledgers count — cap7b_fused_* (B's run) and other labels must not
+# inflate the count.
 echo "[0] waiting for A2 (cap7b) to finish..." | tee -a /tmp/kai_phase2.log
 while true; do
   done=$(python3 - <<'EOF'
 import json, os, glob
-tot, fin = 0, 0
-for f in glob.glob(".kai_code_bench.jsonl.cap7b_*.ledger.jsonl"):
-    tot += 1
-    try:
-        n = sum(1 for _ in open(f))
-        fin += 1 if n >= 15 else 0
-    except Exception:
-        pass
-print(f"{fin}/{tot}")
+arms = ["greedy", "fixed", "auto", "physics"]
+fin, missing = 0, []
+for a in arms:
+    f = f".kai_code_bench.jsonl.cap7b_{a}.ledger.jsonl"
+    if not os.path.exists(f):
+        missing.append(a); continue
+    n = sum(1 for _ in open(f))
+    fin += 1 if n >= 15 else 0
+print(f"{fin}/4")
 EOF
 )
   if [ "$done" = "4/4" ]; then break; fi
-  if ! pgrep -f "kai_code_bench" > /dev/null; then
-    # bench process gone — treat as done even if ledger short
-    echo "  bench process gone (done=$done), proceeding" | tee -a /tmp/kai_phase2.log
+  if ! pgrep -f "kai_code_bench.py.*cap7b" > /dev/null; then
+    # A2 bench process gone — treat as done even if ledger short
+    echo "  A2 bench process gone (done=$done), proceeding" | tee -a /tmp/kai_phase2.log
     break
   fi
   sleep 300
@@ -52,11 +74,26 @@ echo "  A2 done at $(date)" | tee -a /tmp/kai_phase2.log
 
 # 1) B: restart bridge with code memory + mutation gate; verify memory loads.
 echo "[1] B validation: restart bridge" | tee -a /tmp/kai_phase2.log
+# Safety: wait for any straggler bench (e.g. an orphaned C run) to finish so
+# the bridge restart doesn't sever its in-flight requests.
+echo "[1a] waiting for straggler bench processes..." | tee -a /tmp/kai_phase2.log
+while pgrep -f "kai_code_bench.py" > /dev/null; do sleep 60; done
 bash tools/kai_restart.sh >> /tmp/kai_phase2.log 2>&1
-sleep 5
-curl -sf --max-time 3 http://127.0.0.1:$BRIDGE_PORT/health > /dev/null && \
-  echo "  bridge UP" | tee -a /tmp/kai_phase2.log || \
-  echo "  bridge DOWN — aborting chain" | tee -a /tmp/kai_phase2.log
+# The bridge takes a while to boot (loads 82k+ memory entries + embeddings).
+# Wait up to 120s for health instead of racing it.
+echo "[1b] waiting for bridge health..." | tee -a /tmp/kai_phase2.log
+for i in $(seq 1 24); do
+  if curl -sf --max-time 3 http://127.0.0.1:$BRIDGE_PORT/health > /dev/null 2>&1; then
+    echo "  bridge UP after ${i}x5s" | tee -a /tmp/kai_phase2.log
+    break
+  fi
+  sleep 5
+done
+if ! curl -sf --max-time 3 http://127.0.0.1:$BRIDGE_PORT/health > /dev/null 2>&1; then
+  echo "  bridge DOWN after 120s — aborting chain" | tee -a /tmp/kai_phase2.log
+  exit 1
+fi
+sleep 10  # let the bridge finish loading code memory + embeddings
 grep -c "Code memory loaded" /tmp/kai_bridge.log 2>/dev/null | \
   awk '{print "  code-memory load lines in bridge log:", $1}'
 
@@ -64,6 +101,7 @@ grep -c "Code memory loaded" /tmp/kai_bridge.log 2>/dev/null | \
 echo "[2] B measurement: cap7b auto WITH code memory" | tee -a /tmp/kai_phase2.log
 python3 tools/kai_code_bench.py --tier capacity --k 4 --label cap7b_fused \
   --model qwen2.5-coder:7b --arms auto >> /tmp/kai_phase2.log 2>&1
+expect_ledger ".kai_code_bench.jsonl.cap7b_fused_auto.ledger.jsonl" 15 kai_code_bench || exit 1
 
 # 3) A4: darwin unified, capacity tier at 7b, bounded.
 echo "[3] A4: darwin capacity at 7b (code-tasks=$CODE_TASKS_A4, gens=$DARWIN_GENS)" \
@@ -71,6 +109,7 @@ echo "[3] A4: darwin capacity at 7b (code-tasks=$CODE_TASKS_A4, gens=$DARWIN_GEN
 python3 tools/kai_darwin_unified_evolve.py --tier capacity \
   --code-tasks $CODE_TASKS_A4 --generations $DARWIN_GENS \
   --model qwen2.5-coder:7b --seed 7 >> /tmp/kai_phase2.log 2>&1
+expect_ledger ".kai_code_bench.jsonl.darwin_capacity_g*_code.ledger.jsonl" 1 kai_darwin || true
 
 # 4) C: 16b full-stack lock (auto on original 29).
 echo "[4] C: 16b full-stack lock" | tee -a /tmp/kai_phase2.log
