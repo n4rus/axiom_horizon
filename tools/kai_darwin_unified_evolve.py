@@ -44,7 +44,8 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 
 from kai_recall_bench import grade_arm as mem_grade_arm, TASKS as MEM_TASKS  # noqa: E402
-from kai_code_bench import grade_arm as code_grade_arm, TASKS as CODE_TASKS, BRIDGE_PORT  # noqa: E402
+from kai_code_bench import (grade_arm as code_grade_arm, TASKS as CODE_TASKS,
+                            CAPACITY_TASKS, BRIDGE_PORT)  # noqa: E402
 
 PARAMS_PATH = os.path.join(ROOT, ".kai_physics_params.json")
 ARCHIVE_PATH = os.path.join(ROOT, ".axiom_state", "darwin_unified_auto_archive.json")
@@ -91,6 +92,10 @@ CODE_SUBSET = [
     }
 ]
 CODE_SUBSET.sort(key=lambda t: [x["name"] for x in CODE_TASKS].index(t["name"]))
+
+# Capacity-tier subset (A4): the 15 harder stateful/adversarial tasks — the
+# ruler that actually still has headroom at 7b (base tier saturates at ~1.0).
+CAP_SUBSET = list(CAPACITY_TASKS)
 
 W_CODE = 0.5
 W_MEM = 0.5
@@ -151,16 +156,18 @@ def mutate(parent, rate):
     return child
 
 
-def evaluate(vec, model, port, label):
+def evaluate(vec, model, port, label, code_tasks=None):
     """Combined fitness: w_code * code_pass1 (AUTO closed-loop arm, hard
     subset) + w_mem * mem_pass (recall arm, full memory ruler). The auto
     arm is the probe ruler — the bridge self-verifies and its final answer
     is graded, so probe knobs are directly fitness-bearing."""
+    if code_tasks is None:
+        code_tasks = CODE_SUBSET
     write_params(vec)
     last_err = None
     for attempt in range(3):
         try:
-            code_res = code_grade_arm(f"{label}_code", CODE_SUBSET, "auto",
+            code_res = code_grade_arm(f"{label}_code", code_tasks, "auto",
                                       1, port, model=model)
             mem_res = mem_grade_arm(f"{label}_mem", "recall", port, model=model)
             fit = W_CODE * code_res["pass1"] + W_MEM * mem_res["pass"]
@@ -195,8 +202,12 @@ def main():
     ap.add_argument("--model", default="qwen2.5-coder:3b")
     ap.add_argument("--port", type=int, default=BRIDGE_PORT)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--tier", choices=["base", "capacity"], default="base",
+                    help="code ruler tier: base=12 hard subset (saturating), "
+                         "capacity=15 stateful/adversarial tasks (headroom)")
     args = ap.parse_args()
     random.seed(args.seed)
+    code_tasks = CAP_SUBSET if args.tier == "capacity" else CODE_SUBSET
 
     arch = load_archive()
     gen = arch.get("generation", 0)
@@ -208,18 +219,20 @@ def main():
         best_vec = arch.get("best_vec") or dict(DEFAULT_VEC)
 
     print(f"== darwin unified-evolve  gen={gen}  best_fit={best_fit:.3f}  "
-          f"mut_rate={mut_rate:.2f}  model={args.model}", flush=True)
-    print(f"   code subset: {len(CODE_SUBSET)} tasks (AUTO closed-loop arm, "
+          f"mut_rate={mut_rate:.2f}  model={args.model}  tier={args.tier}",
+          flush=True)
+    print(f"   code subset: {len(code_tasks)} tasks (AUTO closed-loop arm, "
           f"w={W_CODE})  |  memory ruler: {len(MEM_TASKS)} tasks (recall arm, "
           f"w={W_MEM})", flush=True)
 
     for g in range(gen + 1, gen + args.generations + 1):
         child = mutate(best_vec, mut_rate)
-        label = f"darwin_unified_auto_g{g}"
+        label = f"darwin_{args.tier}_g{g}"
         print(f"\n--- generation {g}  parent_fit={best_fit:.3f} "
               f"mut_rate={mut_rate:.2f} ---", flush=True)
         t0 = time.time()
-        fit, code_res, mem_res = evaluate(child, args.model, args.port, label)
+        fit, code_res, mem_res = evaluate(child, args.model, args.port, label,
+                                          code_tasks=code_tasks)
         elapsed = time.time() - t0
         print(f"  fitness={fit:.3f}  code_pass1={code_res['pass1']:.3f} "
               f"({code_res['solved']}/{len(CODE_SUBSET)})  "
