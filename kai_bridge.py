@@ -1926,6 +1926,10 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         auto_attempts = 0
         auto_verified = False
         auto_agreement = 0.0
+        # Escalation level: incremented ONLY on real temperature escalations.
+        # A fused-recall re-ask (t_low, attempt 1) does not consume a level,
+        # so the t_mid competence window is never skipped when recall fires.
+        esc_level = 0
         t_start = time.time()
         action_turns = 0
         action_observations = []  # (tool_name, obs)
@@ -1979,7 +1983,10 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                     # question and re-ask at the confident temperature before
                     # overheating. If memory can supply the missing fact/pattern
                     # (memory ruler: raw 0.429 -> fused 1.000), the loop closes
-                    # at t_low instead of gambling at t_mid/t_high.
+                    # at t_low instead of gambling at t_mid/t_high. The recall
+                    # re-ask does NOT consume an escalation level (it is still
+                    # a confident-temp attempt) — so the t_mid competence
+                    # window is never skipped when recall fires.
                     if auto_attempts == 1 and self.corpus is not None:
                         try:
                             hits = self.corpus.search(user_text,
@@ -2006,9 +2013,13 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                         except Exception as e:
                             print(f"[kai_bridge] fused recall warn: {e}",
                                   file=sys.stderr, flush=True)
-                    # Escalate: ramp t_low -> t_mid (attempt 2) -> t_high (3+).
+                    # Escalate on the RAMP: escalation level 0 -> t_mid
+                    # (the competence window), level 1+ -> t_high. esc_level
+                    # is incremented ONLY here, so a fused-recall re-ask
+                    # (t_low) never steals the t_mid tier.
+                    esc_level += 1
                     nxt = (float(pp.get("t_mid", 0.60))
-                           if auto_attempts == 1
+                           if esc_level == 1
                            else float(pp.get("t_high", 1.60)))
                     options["temperature"] = nxt
                     probe_temp = nxt
@@ -2018,7 +2029,8 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                     # not self-reinforcing).
                     ollama_body["messages"] = ollama_messages
                     print(f"[kai_bridge] auto-verify FAILED (agree={auto_agreement}) "
-                          f"attempt {auto_attempts}/{auto_max} -> escalate to T={probe_temp}",
+                          f"attempt {auto_attempts}/{auto_max} -> escalate to T={probe_temp} "
+                          f"(esc_level={esc_level})",
                           file=sys.stderr, flush=True)
                     action_turns = 0
                     action_observations = []
