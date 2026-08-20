@@ -63,6 +63,9 @@ KNOBS = {
     "probe_gen_temp": (0.4, 0.0, 1.0),
     "probe_n_asserts": (5, 2, 8),
     "auto_max_attempts": (3, 2, 5),
+    # probe mutation gate (E applied to the probe: vacuous/self-confirming
+    # asserts are rejected, can_finish/is_bipartite false-verifies at 7b)
+    "probe_mut_kill": (0.5, 0.1, 0.9),
     # recall / fuse (LAYER 1)
     "recall_top_k": (3, 1, 8),
     "recall_ctx_chars": (300, 50, 800),
