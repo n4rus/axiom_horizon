@@ -913,6 +913,79 @@ class VFEState:
                              if _run(cand_code + "\n\n" + ln))
                 return passes / len(reliable)
 
+            def _mutate_source(ref_code: str) -> list:
+                """Deterministic, syntax-safe mutants of the reference
+                (E-style mutation testing applied to the PROBE itself).
+                Mutants are DISCRIMINATING: they skip the LAST data point /
+                iteration, so shallow asserts (trivial inputs, first edges)
+                still pass them while asserts that probe deeper data fail.
+                This separates vacuous/self-confirming assert sets (which a
+                same-model reference can produce — the can_finish false-verify
+                at 7b) from real ones. Returns up to 3 parseable mutants."""
+                if not ref_code:
+                    return []
+                out = []
+                # 1. Skip last iteration of an iterable loop.
+                for m in re.finditer(r"(for\s+\w+.*?in\s+)(\w+)(\s*:)", ref_code):
+                    v = (ref_code[:m.start()] + f"{m.group(1)}{m.group(2)}[:-1]"
+                         f"{m.group(3)}" + ref_code[m.end():])
+                    out.append(v)
+                    break
+                # 2. Skip last index of a range loop.
+                m = re.search(r"range\((\w+)\)", ref_code)
+                if m:
+                    v = (ref_code[:m.start()] + f"range({m.group(1)} - 1)"
+                         + ref_code[m.end():])
+                    out.append(v)
+                # 3. Skip the FIRST edge (shallow probes pass, deep fail).
+                m = re.search(r"for\s+(\w+),\s*(\w+)\s+in\s+(\w+):", ref_code)
+                if m:
+                    v = (ref_code[:m.start()] + f"for {m.group(1)}, {m.group(2)} "
+                         f"in {m.group(3)}[1:]:" + ref_code[m.end():])
+                    out.append(v)
+                clean = []
+                for v in out:
+                    try:
+                        compile(v, "<mutant>", "exec")
+                    except SyntaxError:
+                        continue
+                    if v != ref_code:
+                        clean.append(v)
+                return clean[:3]
+
+            def _mut_kill_frac(assert_lines) -> float:
+                """Mutation score of the probe's OWN assert set: fraction of
+                reference-mutants that at least one assert KILLS. High score
+                = the asserts discriminate real bugs; low score = vacuous /
+                self-confirming verification (same-model reference shares the
+                candidate's blind spot). 0.0 if there is nothing to test."""
+                if not assert_lines:
+                    return 0.0
+                ref = _get_ref()
+                if ref is None:
+                    # No reference to mutate: no mutation evidence exists, so
+                    # fail OPEN (pass the gate) — punishing here would reject
+                    # every answer whenever reference generation hiccups.
+                    return 1.0
+                mutants = _mutate_source(ref)
+                if not mutants:
+                    return 1.0  # nothing to test — pass gate (no evidence)
+                killed = 0
+                for mut in mutants:
+                    # An assert set kills a mutant if ANY assert fails on it
+                    # (while the reference itself passes that assert — i.e.
+                    # the assert is reliable AND discriminating).
+                    fails = False
+                    for ln in assert_lines:
+                        if not _run(ref + "\n\n" + ln):
+                            continue  # not reliable, skip
+                        if not _run(mut + "\n\n" + ln):
+                            fails = True
+                            break
+                    if fails:
+                        killed += 1
+                return killed / len(mutants)
+
             for _ in range(max(1, int(n_samples))):
                 t_prompt = (
                     "You are a test engineer. Given this task:\n"
@@ -1088,7 +1161,36 @@ class VFEState:
                     verified = False
                     detail = adv_detail
                 else:
-                    detail = f"{frac:.2f} + {adv_detail}"
+                    # ── MUTATION GATE (E applied to the probe itself) ──
+                    # The adversarial batch passed, but verification still
+                    # rests on the probe's own asserts — which can be VACUOUS
+                    # even when they pass. The can_finish false-verify at 7b:
+                    # same-model reference shared the candidate's blind spot,
+                    # so reference-anchoring self-confirmed a WRONG answer.
+                    # Mutate the reference (skip-last-iteration / skip-first-
+                    # edge) and require the assert set to KILL a minimum
+                    # fraction of mutants. Low kill-rate = the asserts don't
+                    # discriminate real bugs = verification untrustworthy ->
+                    # escalate instead of trusting. Fires only on this
+                    # all-clean path (the risky one); darwin-evolvable.
+                    mut_on = int(self.physics_params.get("probe_mut", 1)) if \
+                        hasattr(self, "physics_params") else 1
+                    if mut_on:
+                        last_asserts = (locals().get("adv_lines") or
+                                        locals().get("assert_lines") or [])
+                        mk = _mut_kill_frac(last_asserts)
+                        mut_thresh = float(
+                            self.physics_params.get("probe_mut_kill", 0.5)) \
+                            if hasattr(self, "physics_params") else 0.5
+                        if last_asserts and mk < mut_thresh:
+                            verified = False
+                            detail = (f"mut-gate {mk:.2f} < {mut_thresh:.2f} "
+                                      f"(vacuous asserts, "
+                                      f"{len(last_asserts)} lines)")
+                        else:
+                            detail = f"{frac:.2f} + {adv_detail}"
+                    else:
+                        detail = f"{frac:.2f} + {adv_detail}"
             else:
                 detail = f"{frac:.2f}" if verified else f"{first_err}"
             return verified, detail
@@ -1377,6 +1479,15 @@ class PhysicsParams:
         # BREAK naive implementations. Answer verified only if it passes too.
         # Fires only on the all-clean path; darwin-evolvable.
         "probe_adversarial": 1,
+        # Mutation gate (E applied to the probe itself): on the all-clean
+        # pass path, mutate the reference implementation (off-by-one, nuked
+        # return) and require the assert set to KILL at least this fraction
+        # of mutants. A low kill-rate = vacuous/self-confirming asserts (the
+        # can_finish false-verify at 7b: same-model reference shared the
+        # candidate's blind spot, asserts verified a WRONG answer). Gate
+        # failure = verification untrustworthy -> escalate. Darwin-evolvable.
+        "probe_mut": 1,
+        "probe_mut_kill": 0.5,
     }
 
     def __init__(self):
