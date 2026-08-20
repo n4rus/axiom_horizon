@@ -84,6 +84,16 @@ WIKI_MEMORY_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     ".kai_wiki_memory.json"
 )
+# Code memory: verified code patterns (prompt -> reference solution) seeded
+# by tools/kai_seed_code_memory.py, absorbed from passing bench runs. Own
+# shard namespace (.kai_code_memory.*.json) so the fused closed loop can
+# retrieve a correct implementation pattern for a code question BEFORE
+# overheating (LAYER 1 memory edge applied to LAYER 2 code tasks). The
+# bridge only reads these shards; the seeder owns writes.
+CODE_MEMORY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".kai_code_memory.json"
+)
 # Chat memories live in their OWN small shard. The bridge never rewrites the
 # 273MB corpus file or the absorb-owned doc memory; it only persists the chat
 # shard. This sharding means one corrupt file can never wipe all memory, and
@@ -205,6 +215,10 @@ class CorpusAttractor:
                 wiki_shards = wiki_shards[:MAX_WIKI_SHARDS]
             for shard_path in wiki_shards:
                 self._load_shard(shard_path, "Wiki memory")
+        # 2c) code memory shards (verified code patterns; seeder-owned)
+        code_shards = sorted(glob.glob(CODE_MEMORY_PATH.replace(".json", ".*.json")))
+        for shard_path in code_shards:
+            self._load_shard(shard_path, "Code memory")
         # 3) chat shard (the only file this process ever writes)
         if os.path.exists(CHAT_MEMORY_PATH):
             self._load_shard(CHAT_MEMORY_PATH, "Chat memory")
