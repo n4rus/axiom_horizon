@@ -1352,14 +1352,27 @@ def call_ollama_chat(body: dict, timeout: float = 120.0) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Ollama HTTP {e.code}: {err_body}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Ollama unreachable: {e.reason}")
+    last_err = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+            # 5xx = transient ollama overload (cold load, VRAM pressure after
+            # long GPU-serial bench). Retry with backoff; 4xx = our bug.
+            if e.code >= 500 and attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                last_err = RuntimeError(f"Ollama HTTP {e.code}: {err_body}")
+                continue
+            raise RuntimeError(f"Ollama HTTP {e.code}: {err_body}")
+        except urllib.error.URLError as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                last_err = RuntimeError(f"Ollama unreachable: {e.reason}")
+                continue
+            raise RuntimeError(f"Ollama unreachable: {e.reason}")
+    raise last_err
 
 
 # ── OpenAI → Ollama message conversion ────────────────────────────────────

@@ -687,7 +687,7 @@ def _ollama_chat(model: str, q: str, temperature: float, max_tokens: int) -> str
 
 
 def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
-                 model: str = "qwen2.5-coder:3b", retries: int = 2,
+                 model: str = "qwen2.5-coder:3b", retries: int = 4,
                  auto: bool = False) -> tuple:
     """Bridge call with connection resilience: 7b on 6GB VRAM + auto-recall
     + absorb can push a single request past 240s; the client timeout was
@@ -725,10 +725,14 @@ def _bridge_chat(q: str, max_tokens: int, port: int, attempt: int = 0,
             return content, phys
         except Exception as e:
             last_err = e
+            # 502 Bad Gateway = bridge overloaded (ollama cold load / VRAM pressure
+            # after long GPU-serial run). Give it more time to recover.
+            is_502 = "502" in str(e) or "Bad Gateway" in str(e)
             if rtry < retries:
-                print(f"  [bridge retry {rtry + 1}/{retries}] {type(e).__name__}: {e}",
+                wait = (15 * (rtry + 1)) if is_502 else (5 * (rtry + 1))
+                print(f"  [bridge retry {rtry + 1}/{retries}] {type(e).__name__}: {e} (wait {wait}s)",
                       flush=True)
-                time.sleep(5 * (rtry + 1))
+                time.sleep(wait)
     raise last_err
 
 
