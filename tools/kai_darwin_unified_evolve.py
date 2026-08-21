@@ -243,7 +243,7 @@ def main():
                                           code_tasks=code_tasks)
         elapsed = time.time() - t0
         print(f"  fitness={fit:.3f}  code_pass1={code_res['pass1']:.3f} "
-              f"({code_res['solved']}/{len(CODE_SUBSET)})  "
+              f"({code_res['solved']}/{len(code_tasks)})  "
               f"mem_pass={mem_res['pass']:.3f} "
               f"({mem_res['solved']}/{mem_res['tasks']})  ({elapsed/60:.1f} min)",
               flush=True)
