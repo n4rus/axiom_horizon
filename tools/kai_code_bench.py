@@ -483,7 +483,9 @@ CAPACITY_TASKS = [
                    "that returns the length of the shortest transformation "
                    "sequence from begin to end where each step changes ONE "
                    "letter into another word in the words list, and the "
-                   "length counts begin. Return 0 if unreachable."),
+                   "length counts begin. Return 0 if unreachable. "
+                   "Hint: use BFS over the word graph; each word is a node, "
+                   "edges connect words differing by one letter."),
         "tests": (
             "assert word_ladder('hit','cog',['hot','dot','dog','lot','log','cog']) == 5\n"
             "assert word_ladder('hit','cog',['hot','dot','dog','lot','log']) == 0\n"
@@ -496,7 +498,8 @@ CAPACITY_TASKS = [
         "name": "edit_distance",
         "prompt": ("Write a Python function edit_distance(a, b) that returns "
                    "the minimum number of operations (insert, delete, "
-                   "replace) to convert a into b."),
+                   "replace) to convert a into b. "
+                   "Hint: use DP with table dp[i][j] for prefixes a[:i], b[:j]."),
         "tests": (
             "assert edit_distance('horse','ros') == 3\n"
             "assert edit_distance('intention','execution') == 5\n"
