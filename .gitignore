@@ -94,3 +94,6 @@ rust/kai-fusion/src/*.tmp
 
 # kai-fusion build artifacts (were leaking into history)
 rust/kai-fusion/target/
+
+# credentials (NEVER push)
+api_keys
