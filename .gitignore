@@ -1,39 +1,111 @@
-# API keys / secrets
+# === KAI-FUSION / AXIOM HORIZON: LEAN GITIGNORE ===
+# Generated to keep repo <500MB for GitHub free tier
+# Union: all previous private + your 22 files + all md private except LICENSE/README/MANUAL + heavy 40GB
+# ==================================================
+
+# ==================================================
+# OPencode HISTORY & CONFIG (personal working dir) — PRIVATE
+# ==================================================
+.opencode/
+opencode_history_full/
+opencode_sessions/
+opencode.kai.json
+opencode.kai.ollama.json
+opencode.json
+opencode.axiom.backup.json
+opencode.BACKUP.json
+opencode_NEW.json
+.opencode_resume.json
+.opencode.kai.json
+.opencode.kai.ollama.json
+.kai_code_bench.jsonl
+.kai_code_bench.jsonl.*
+opencode.axiom.backup.json
+api_keys
+.safety_protocols.txt
 opencode_secrets.json
 .env
 *.key
 *.pem
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
+# ==================================================
+# WIKI & LARGE MEMORY FILES (95+ x ~100KB each)
+# ==================================================
+.kai_wiki_memory.*.json
+.kai_wiki_memory.*.json.*
+kai_wiki_memory/
+wiki_2_done.md
+wiki_filtered/
+wiki_script.md
+.kai_doc_memory.*.json
+.kai_doc_memory.json.bak
+.kai_corpus_attractor.json
+.kai_physics_params.json
+.kai_wiki_memory.json
+.kai_wiki_memory.json.bak
 
-# State / data
+# ==================================================
+# THE 10GB+ WIKIPEDIA DUMP (DO NOT UPLOAD)
+# ==================================================
+enwiki-20260601-pages-articles-multistream.xml.bz2
+enwiki-*.bz2
+enwiki-*.xml
+
+# ==================================================
+# KAI SESSION STATE & DEBUG (personal workflow)
+# ==================================================
 .axiom_state/
+.axiom_tree/
+.kai_backups/
+.kai_bracket.json
+.kai_chat_memory.json
+.kai_chat_memory.json.bak
+.kai_chat_memory.json.tmp
+.kai_darwin_state.json
+.kai_ingest_progress.json
+.kai_physics_bench.jsonl
+.kai_physics_bench.jsonl.*
+.kai_recall_bench.jsonl
+.kai_recall_bench.jsonl.*
+.kai_refine_ledger.jsonl
+.kai_state/
+.venv/
+.eve_state/
+.cache/
+.kai_sessions_stage/
 attractor_state.json
 alien.json
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Large embedded repos
+# ==================================================
+# HEAVY BUILD ARTIFACTS / CACHE (rebuildable)
+# ==================================================
+target/
+rust/target/
+rust/kai-fusion/target/
+rust/external_tests/target/
+kai/target/
+kai/attractor.bin
 llvm-project
 llvm-project/
 sources/
-rust/target/
-kai/target/
-kai/attractor.bin
-
-# Rust temp/junk files
+sources/*
+__pycache__/
+*.pyc
+*.egg-info/
+.unsloth_compiled_cache/
+distillation_pipeline
+attractor.bin
+world_attractor.json
+domains
+files
+quanta_chat
+last_progress.md
+*.bak
+*.restored
+*.tmp
+temp_*
+fix_*
+.mdlist
 rust/kai-fusion/fix_*
 rust/kai-fusion/temp_*
 rust/kai-fusion/*.restored
@@ -41,77 +113,92 @@ rust/kai-fusion/*.bak
 rust/kai-fusion/*.tmp
 rust/kai-fusion/temp_ast_test
 rust/kai-fusion/fix_lifecycle
-
-# State / backups / runtime artifacts
-.kai_backups/
-.kai_darwin_state.json
-.kai_bracket.json
-.kai_ingest_progress.json
-.kai_physics_params.json
-.kai_physics_bench.jsonl
-.kai_code_bench.jsonl
-.kai_code_bench.jsonl.*
-.kai_recall_bench.jsonl
-.kai_recall_bench.jsonl.*
-.kai_refine_ledger.jsonl
-attractor.bin
-world_attractor.json
-opencode_history_full/
-quanta_chat
-distillation_pipeline
-domains
-files
-.local/
-# opencode runtime config snapshots (may contain credentials)
-opencode.axiom.backup.json
-opencode.kai.json
-opencode.kai.ollama.json
-opencode_NEW.json
-
-# Huge memory / ingest artifacts — opencode's git snapshot chokes on these
-.kai_doc_memory.json
-.kai_doc_memory.json.bak
-.kai_doc_memory.*.json
-.kai_wiki_memory.json
-.kai_wiki_memory.json.bak
-.kai_wiki_memory.*.json
-.kai_corpus_attractor.json
-.kai_chat_memory.json
-.kai_chat_memory.json.bak
-wiki_filtered/
-opencode_sessions/
-enwiki-*.bz2
-enwiki-*.xml
-rust/external_tests/target/
-
-# Rust backups/temp (untracked leftovers)
 kai/src/*.bak
 kai/src/*.restored
 kai/src/*.tmp
 rust/kai-fusion/src/*.restored
 rust/kai-fusion/src/*.tmp
-.kai_sessions_stage/
-
-# kai-fusion build artifacts (were leaking into history)
-rust/kai-fusion/target/
-
-# credentials (NEVER push)
-api_keys
-
-# personal data / chat exports / data dumps (never push)
-session-*.md
+# --- your 22 specific files (union) ---
+adjustments.txt
 agents_chat.txt
-axiom.service
 bthink.txt
+conscious_loop_log20260406
 conscious_loop_log*
 coulombs_law_examples.txt
 dynamic_system_data.txt
+euler_agent.modelfile
+GPT_chat
 intent
+mdlist
+quantum_entanglement_cryptography_examples.txt
+requirements.txt
+sess_mdlist
 stdout
 synthetic_examples.txt
-training_examples.txt
-quantum_entanglement_cryptography_examples.txt
 wordlist.txt
 domain-prober.md
-requirements.txt
-opencode.json
+training_examples.txt
+axiom.service
+
+# ==================================================
+# LOCAL USER SETTINGS (never commit)
+# ==================================================
+.local/
+/home/l/.config/opencode/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==================================================
+# PRODUCTS / SANDBOX / DIST (not source code)
+# ==================================================
+/products/
+/sandbox/
+/dist/
+
+# ==================================================
+# ML MODELS / WEIGHTS / HEAVY ARCHIVES
+# ==================================================
+*.gguf
+*.bin
+*.safetensors
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.tar.gz
+*.tar.bz2
+*.7z
+*.rar
+*.zip
+
+# ==================================================
+# OPencode SESSION LOG FILES (personal) + ALL MD IN ROOT
+# ==================================================
+*.md
+!LICENSE
+!README.md
+!MANUAL.md
+session-*.md
+session-ses_*.md
+session_*.md
+
+# ==================================================
+# RANDOM / TEMPORARY (cleanup weekly)
+# ==================================================
+.crash_reports/
+/tmp/opencode/
+*.tmp
+
+# ==================================================
+# KEEP ONLY WHAT MATTERS FOR RECRUITERS:
+# ==================================================
+# rust/              <- Your Rust source (the valuable IP)
+# MANUAL.md          <- Full manual (20 sections)
+# README.md          <- Overview + strengths
+# LICENSE            <- MIT
+# .gitignore         <- This file
+# ==================================================
