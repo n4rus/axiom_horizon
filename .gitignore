@@ -97,3 +97,21 @@ rust/kai-fusion/target/
 
 # credentials (NEVER push)
 api_keys
+
+# personal data / chat exports / data dumps (never push)
+session-*.md
+agents_chat.txt
+axiom.service
+bthink.txt
+conscious_loop_log*
+coulombs_law_examples.txt
+dynamic_system_data.txt
+intent
+stdout
+synthetic_examples.txt
+training_examples.txt
+quantum_entanglement_cryptography_examples.txt
+wordlist.txt
+domain-prober.md
+requirements.txt
+opencode.json
