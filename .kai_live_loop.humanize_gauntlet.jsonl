@@ -1,9 +1,25 @@
-{"event": "start", "task": "humanize-gauntlet-376+375", "model": "qwen2.5-coder:7b", "max_cycles": 10, "ts": "2026-08-22T14:02:41.632702+00:00"}
-{"event": "cycle", "arm": "B_raw_singleshot", "cycle": 1, "ok": false, "patched": ["naturaldelta", "ordinal"], "ts": "2026-08-22T14:05:35.924946+00:00"}
-{"event": "arm_done", "arm": "B_raw_singleshot", "model": "qwen2.5-coder:7b", "cycles": 1, "ok": false, "ts": "2026-08-22T14:05:35.925074+00:00"}
-{"event": "cycle", "arm": "A_closed_loop", "cycle": 1, "ok": false, "patched": ["naturaldelta", "ordinal"], "ts": "2026-08-22T14:08:26.562047+00:00"}
-{"event": "cycle", "arm": "A_closed_loop", "cycle": 2, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T14:21:23.469344+00:00"}
-{"event": "cycle", "arm": "A_closed_loop", "cycle": 3, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T14:37:51.162701+00:00"}
-{"event": "cycle", "arm": "A_closed_loop", "cycle": 4, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T14:54:58.251997+00:00"}
-{"event": "cycle", "arm": "A_closed_loop", "cycle": 5, "ok": false, "err": "compile", "compile_err": "time.py:136 unterminated string literal (detected at line 136) | ctx=\"    This is more or less compatible with Django's `naturaltime` filter.\"", "names": ["naturaldelta", "naturaltime", "precisedelta"], "lens": {"naturaldelta": 1101, "naturaltime": 1856, "precisedelta": 239}, "ts": "2026-08-22T15:12:41.070586+00:00"}
-{"event": "cycle", "arm": "A_closed_loop", "cycle": 6, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T15:28:36.913875+00:00"}
+{"event": "start", "task": "humanize-gauntlet-376+375", "model": "qwen2.5-coder:7b", "max_cycles": 20, "ts": "2026-08-22T18:26:51.090975+00:00"}
+{"event": "cycle", "arm": "B_raw_singleshot", "cycle": 1, "ok": false, "patched": ["naturaldelta", "ordinal"], "ts": "2026-08-22T18:30:51.163974+00:00"}
+{"event": "arm_done", "arm": "B_raw_singleshot", "model": "qwen2.5-coder:7b", "cycles": 1, "ok": false, "bugs": {"bugA": true, "bugB": false}, "ts": "2026-08-22T18:30:51.166235+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 1, "ok": false, "patched": ["naturaldelta", "ordinal"], "ts": "2026-08-22T18:33:37.000556+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 2, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T18:46:09.867943+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 3, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T19:03:44.254503+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 4, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T19:22:33.386939+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 5, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T19:38:28.867090+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 6, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T19:54:29.518063+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 7, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T20:09:38.603162+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 8, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T20:24:40.713971+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 9, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T20:39:43.119419+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 10, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T20:56:38.082414+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 11, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T21:14:28.661313+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 12, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T21:29:35.537682+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 13, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T21:45:44.972345+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 14, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T22:00:41.111395+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 15, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T22:15:37.823851+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 16, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T22:30:34.881404+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 17, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T22:45:31.983114+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 18, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T23:00:29.509293+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 19, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T23:15:27.612986+00:00"}
+{"event": "cycle", "arm": "A_closed_loop", "cycle": 20, "ok": false, "patched": ["naturaldelta", "naturaltime", "precisedelta"], "ts": "2026-08-22T23:30:26.740686+00:00"}
+{"event": "arm_done", "arm": "A_closed_loop", "model": "qwen2.5-coder:7b", "cycles": 20, "ok": false, "bugs": {"bugA": true, "bugB": false}, "ts": "2026-08-22T23:30:26.764941+00:00"}
+{"event": "summary", "baseline_ok": false, "baseline_cycles": 1, "loop_ok": false, "loop_cycles": 20, "verdict": "tie:False", "baseline_bugs": {"bugA": true, "bugB": false}, "loop_bugs": {"bugA": true, "bugB": false}, "ts": "2026-08-22T23:30:26.767430+00:00"}

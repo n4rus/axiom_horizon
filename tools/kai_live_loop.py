@@ -24,7 +24,7 @@ REPO = Path("/tmp/opencode/humanize_live")
 OLLAMA = "http://localhost:11434/api/chat"
 MODEL = "qwen2.5-coder:7b"
 LEDGER = Path("/home/l/Desktop/AxiomTree/axiom_horizon/.kai_live_loop.humanize_gauntlet.jsonl")
-MAX_CYCLES = 10
+MAX_CYCLES = 20
 LAST_ERR = ""
 
 # name -> (file, regex extracting the full top-level function)
@@ -113,7 +113,7 @@ def chat(messages: list[dict], temperature: float) -> str:
         "keep_alive": "15m",
     }).encode()
     req = urllib.request.Request(OLLAMA, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=1200) as r:
+    with urllib.request.urlopen(req, timeout=2400) as r:
         return json.load(r)["message"]["content"]
 
 
