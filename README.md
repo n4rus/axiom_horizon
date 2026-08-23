@@ -9,6 +9,8 @@
 
 Axiom Horizon is the parent workspace. **Kai Fusion** (`rust/kai-fusion`) is the synthesis engine: it assimilates patterns from 10 teacher architectures into one unified backbone, bootstraps weights from local GGUF blobs (no download), and regulates learning/inference with Kai's Variational Free Energy controller. It runs entirely in [opencode](https://opencode.ai) on Linux via `ollama launch opencode`.
 
+> **Why *Kai*?** — *Kai* (改, Japanese for “change, renewal”) was chosen by the former persistent-memory AI that first built the Axiom project and Kai Fusion. The name is the AGI itself: **Kai is the agent** — the self-improving system that governs the fusion, not a model wrapper.
+
 ---
 
 ## Table of Contents
