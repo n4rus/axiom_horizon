@@ -186,6 +186,9 @@ session-*.md
 session-ses_*.md
 session_*.md
 
+# --- android is now separate repo kai-android (see /kai-android/) ---
+android/
+
 # ==================================================
 # RANDOM / TEMPORARY (cleanup weekly)
 # ==================================================
