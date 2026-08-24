@@ -205,3 +205,5 @@ android/
 # LICENSE            <- MIT
 # .gitignore         <- This file
 # ==================================================
+setup-dnsmasq-nginx.sh
+# local infra
