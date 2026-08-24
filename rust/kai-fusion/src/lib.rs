@@ -9,5 +9,6 @@
 //! Only the modules needed by external consumers are surfaced here; everything
 //! else stays internal to the binary.
 pub mod attractor;
+pub mod companion;
 pub mod curvature;
 pub mod vfe;
