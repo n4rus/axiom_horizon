@@ -10,5 +10,6 @@
 //! else stays internal to the binary.
 pub mod attractor;
 pub mod companion;
+pub mod criticality;
 pub mod curvature;
 pub mod vfe;
