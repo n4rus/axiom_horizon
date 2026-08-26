@@ -5147,6 +5147,23 @@ fn install_service_cmd() {
     println!("  systemctl --user enable {service_name}");
     println!("  systemctl --user start {service_name}");
     println!();
+    println!("Nightly evolution (Phase A convergence — darwin + bench at 03:00 daily):");
+    let nightly_source = concat!(
+        include_str!("kai-nightly.service"),
+        "\n",
+        include_str!("kai-nightly.timer")
+    );
+    let nightly_dir = format!("{}/.config/systemd/user", std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
+    let _ = std::fs::create_dir_all(&nightly_dir);
+    // split the combined source back into .service + .timer files
+    if let Some(idx) = nightly_source.find("[Unit]\nDescription=Kai nightly") {
+        let (svc, timer) = nightly_source.split_at(idx);
+        let _ = std::fs::write(format!("{nightly_dir}/kai-nightly.service"), svc.trim_start());
+        let _ = std::fs::write(format!("{nightly_dir}/kai-nightly.timer"), timer);
+        println!("  Wrote {nightly_dir}/kai-nightly.service + kai-nightly.timer");
+        println!("  systemctl --user enable --now kai-nightly.timer");
+    }
+    println!();
     println!("To check status:");
     println!("  systemctl --user status {service_name}");
     println!();

@@ -1,0 +1,15 @@
+[Unit]
+Description=Kai AGI daemon — nightly darwin evolution + bench (Phase A convergence)
+After=network.target ollama.service
+
+[Service]
+Type=oneshot
+User=l
+WorkingDirectory=/home/l/Desktop/AxiomTree/axiom_horizon
+Environment=OLLAMA_HOST=http://127.0.0.1:11434
+# Nightly pass: evolve physics+source, then bench to ledger. Failures logged, never fatal.
+ExecStart=/bin/bash -c 'kai darwin evolve --generations 3 --physics >> /tmp/opencode/kai_nightly.log 2>&1; kai bench >> /tmp/opencode/kai_nightly.log 2>&1; echo "=== nightly $(date -Is) done ===" >> /tmp/opencode/kai_nightly.log'
+TimeoutStartSec=7200
+
+[Install]
+WantedBy=multi-user.target
