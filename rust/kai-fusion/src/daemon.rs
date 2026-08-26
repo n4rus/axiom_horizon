@@ -12,6 +12,7 @@
 
 use crate::attractor;
 use crate::bracket;
+use crate::companion::{ChatRow, ChatStore, FactStore, MessageRow};
 use crate::routes;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -97,6 +98,22 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
         cfg.tau_decay_rate, cfg.tau_learning_rate, cfg.idle_check_interval_s);
     eprintln!("[daemon] type input or 'exit' to stop\n");
 
+    // ---- Companion wiring (Phase A2): date-indexed permanent memory ----
+    let state_dir = Path::new(attr_path).parent().unwrap_or(Path::new(".kai_state"));
+    let chat_db = state_dir.join("kai_chat.db").to_string_lossy().to_string();
+    let fact_db = state_dir.join("kai_facts.db").to_string_lossy().to_string();
+    let chat_store = ChatStore::load_or_new(&chat_db);
+    let fact_store = FactStore::load_or_new(&fact_db);
+    let session_id = format!("daemon-{}", chrono_now_ms());
+    chat_store.upsert_chat(&ChatRow {
+        id: session_id.clone(),
+        title: format!("daemon {}", now_date_string()),
+        model: cfg.model_path.clone(),
+        created_at: chrono_now_ms(),
+        updated_at: chrono_now_ms(),
+    });
+    eprintln!("[daemon] companion wired: chats->{chat_db} facts->{fact_db} session={session_id}");
+
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
@@ -141,6 +158,24 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
         _has_input = true;
         last_input_time = Instant::now();
 
+        // ---- Companion: persist user turn + extract facts ----
+        chat_store.insert_message(&MessageRow {
+            id: format!("{}-u-{}", session_id, chrono_now_ms()),
+            chat_id: session_id.clone(),
+            role: "USER".into(),
+            text: line.clone(),
+            vfe: None,
+            curvature: None,
+            temp: None,
+            model: cfg.model_path.clone(),
+            ts: chrono_now_ms(),
+        });
+        if let Some(fact) = FactStore::extract_fact(&line) {
+            if fact_store.store(&fact, "user-stated") {
+                eprintln!("[daemon] fact stored: {fact}");
+            }
+        }
+
         // ---- Process input ----
         // Classify and route
         let route = routes::RouteConfig::from_query(&line);
@@ -181,6 +216,7 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
         let ids = tok.encode(&augmented);
         let mut all_ids = ids.clone();
         let eos = tok.eos;
+        let mut gen_text = String::new();
 
         // Generate tokens
         let temp = route.temperature.unwrap_or(cfg.temperature);
@@ -213,6 +249,7 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
             let next = next.min(model_cfg.vocab_size - 1);
             all_ids.push(next);
             let s = tok.decode(&[next]);
+            gen_text.push_str(&s);
             print!("{s}");
             io::stdout().flush().ok();
             if next == eos { break; }
@@ -222,6 +259,19 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
 
         // ---- Push final hidden state to attractor ----
         let (_logits_last, xf_last) = model.forward(&model_cfg, &all_ids);
+
+        // ---- Companion: persist KAI turn (with physics scalars) ----
+        chat_store.insert_message(&MessageRow {
+            id: format!("{}-k-{}", session_id, chrono_now_ms()),
+            chat_id: session_id.clone(),
+            role: "KAI".into(),
+            text: gen_text.clone(),
+            vfe: Some(bracket.vfe),
+            curvature: None,
+            temp: Some(route.temperature.unwrap_or(cfg.temperature)),
+            model: cfg.model_path.clone(),
+            ts: chrono_now_ms(),
+        });
         let store_dim = 768.min(xf_last.len());
         let store_vec: Vec<f32> = xf_last.iter().take(store_dim).copied().collect();
         // Use bracket state vector for attractor storage (Phase 7 integration)
@@ -332,5 +382,49 @@ mod tests {
     fn test_daemon_stop_flag() {
         let stop = Arc::new(AtomicBool::new(true));
         assert!(stop.load(Ordering::Relaxed));
+    }
+}
+
+// ---- companion helpers (Phase A2) ----
+fn chrono_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn now_date_string() -> String {
+    // UTC date from epoch ms — no chrono dep; days since epoch -> Y-M-D via civil algorithm
+    let secs = chrono_now_ms() / 1000;
+    let days = secs.div_euclid(86400);
+    // Howard Hinnant's civil_from_days
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod companion_tests {
+    use super::*;
+
+    #[test]
+    fn date_string_is_sane() {
+        let d = now_date_string();
+        assert_eq!(d.len(), 10);
+        assert_eq!(d.as_bytes()[4], b'-');
+        assert!(d.starts_with("2026-"));
+    }
+
+    #[test]
+    fn chrono_now_ms_positive() {
+        assert!(chrono_now_ms() > 1_700_000_000_000);
     }
 }

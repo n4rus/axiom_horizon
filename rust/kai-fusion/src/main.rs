@@ -36,6 +36,7 @@ mod transplant;
 mod values;
 mod routes;
 mod daemon;
+mod companion;
 mod bracket;
 mod phen;
 mod fs_agent;
