@@ -8,7 +8,7 @@ User=l
 WorkingDirectory=/home/l/Desktop/AxiomTree/axiom_horizon
 Environment=OLLAMA_HOST=http://127.0.0.1:11434
 # Nightly pass: evolve physics+source, then bench to ledger. Failures logged, never fatal.
-ExecStart=/bin/bash -c 'kai darwin evolve --generations 3 --physics >> /tmp/opencode/kai_nightly.log 2>&1; kai bench >> /tmp/opencode/kai_nightly.log 2>&1; echo "=== nightly $(date -Is) done ===" >> /tmp/opencode/kai_nightly.log'
+ExecStart=/bin/bash -c 'python3 /home/l/Desktop/AxiomTree/axiom_horizon/tools/kai_wiki_ingest.py --limit 50 >> /tmp/opencode/kai_wiki.log 2>&1; /usr/local/bin/kai darwin evolve --generations 3 --physics >> /tmp/opencode/kai_nightly.log 2>&1; /usr/local/bin/kai bench >> /tmp/opencode/kai_nightly.log 2>&1; echo "=== nightly $(date -Is) done ===" >> /tmp/opencode/kai_nightly.log'
 TimeoutStartSec=7200
 
 [Install]

@@ -98,9 +98,8 @@ def main(limit=0):
                 if not m_title or not m_text:
                     page=""; continue
                 title=m_title.group(1)
-                # skip non-article namespaces
-                if ":" in title and not title.startswith("Category:") is False:
-                    # heuristic: skip File, Template, etc.
+                # skip non-article namespaces (File:, Template:, etc.)
+                if ":" in title:
                     if any(title.startswith(p+":") for p in ["File","Template","Category","Wikipedia","Help","Portal","Draft","TimedText","Module"]):
                         page=""; continue
                 raw=m_text.group(1)
