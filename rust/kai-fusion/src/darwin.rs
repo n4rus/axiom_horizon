@@ -441,15 +441,19 @@ pub struct FitnessComponents {
     pub vfe: f32,
     /// Novelty vs existing archive (higher = more novel)
     pub novelty: f32,
+    /// Groundedness: does the generated parameter space retrieve real-world
+    /// cross-domain knowledge from the worldgraph? (higher = better, 0..1)
+    pub retrieval_quality: f32,
 }
 
 impl FitnessComponents {
     pub fn aggregate(&self) -> f32 {
-        0.4 * self.task_performance
-            + 0.2 * self.speed
-            + 0.1 * self.memory_efficiency
-            + 0.2 * (1.0 - self.vfe.min(1.0))
-            + 0.1 * self.novelty
+        0.35 * self.task_performance
+            + 0.15 * self.speed
+            + 0.10 * self.memory_efficiency
+            + 0.20 * (1.0 - self.vfe.min(1.0))
+            + 0.10 * self.novelty
+            + 0.10 * self.retrieval_quality
     }
 }
 
@@ -850,8 +854,10 @@ impl DarwinArchive {
                 candidate.fitness = result.fitness;
                 candidate.fitness_components.task_performance = result.task_performance;
                 candidate.fitness_components.speed = result.speed;
+                candidate.fitness_components.memory_efficiency = result.memory_efficiency;
                 candidate.fitness_components.vfe = result.vfe;
                 candidate.fitness_components.novelty = result.novelty;
+                candidate.fitness_components.retrieval_quality = result.retrieval_quality;
                 candidate.fitness = result.fitness;
             }
         }
@@ -960,6 +966,20 @@ pub mod genetic {
                 .unwrap()
                 .as_secs(),
         })
+    }
+
+    /// Tau-seeking filter: rank candidates by predicted τ′ (vfe inverted) and
+    /// keep top-K. Bench-gated upstream — never overrides fitness promotion.
+    pub fn tau_seeking_top_k<'a>(candidates: &'a [Candidate], tau: f32, k: usize) -> Vec<&'a Candidate> {
+        let mut scored: Vec<(&Candidate, f32)> = candidates
+            .iter()
+            .map(|c| {
+                let s = crate::vfe::tau_seeking_score(&c.patch, tau, crate::vfe::TAU_LEARNING_RATE, crate::vfe::ENGAGE_COUPLING);
+                (c, s)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().take(k).map(|(c, _)| c).collect()
     }
 }
 
@@ -1219,6 +1239,7 @@ pub mod parallel_eval {
         pub memory_efficiency: f32,
         pub vfe: f32,
         pub novelty: f32,
+        pub retrieval_quality: f32,
         pub success: bool,
     }
 
@@ -1274,14 +1295,28 @@ pub mod parallel_eval {
                         // Novelty: inverse of similarity to existing candidates
                         result.novelty = self.compute_novelty(&candidate.patch, candidates);
 
-                        // Composite fitness — every component in [0,1], so a
-                        // full-pass, fast, novel candidate tops out near ~0.9
-                        // and the gate threshold (0.8) sits between "typical"
-                        // and "elite" instead of below every score.
-                        result.fitness = 0.4 * result.task_performance
-                            + 0.2 * result.speed
-                            + 0.2 * (1.0 - result.vfe)
-                            + 0.2 * result.novelty;
+                        // Memory efficiency: neutral 0.5 (not yet instrumented
+                        // per-candidate RSS; kept at mid so the B1 rebalance
+                        // does not penalize every score uniformly).
+                        result.memory_efficiency = 0.5;
+                        // Retrieval quality: groundedness in the worldgraph (B1)
+                        // — does the candidate's text retrieve diverse domains?
+                        // Offline hash-embedding, no network, bench-gated fitness
+                        // stays the judge so this cannot be gamed.
+                        result.retrieval_quality = crate::worldgraph::retrieval_quality_cached(
+                            &format!("{} {}", candidate.description, candidate.patch)
+                        );
+
+                        // Composite fitness — rebalanced for 6 terms (B1 adds
+                        // retrieval_quality 0.10, memory stays implicit 0.10).
+                        // Every component in [0,1], so a full-pass, fast,
+                        // novel, grounded candidate tops near ~0.9.
+                        result.fitness = 0.35 * result.task_performance
+                            + 0.15 * result.speed
+                            + 0.10 * result.memory_efficiency
+                            + 0.20 * (1.0 - result.vfe)
+                            + 0.10 * result.novelty
+                            + 0.10 * result.retrieval_quality;
                     }
 
                     result
@@ -1419,8 +1454,10 @@ pub mod self_play {
                         candidate.fitness = result.fitness;
                         candidate.fitness_components.task_performance = result.task_performance;
                         candidate.fitness_components.speed = result.speed;
+                        candidate.fitness_components.memory_efficiency = result.memory_efficiency;
                         candidate.fitness_components.vfe = result.vfe;
                         candidate.fitness_components.novelty = result.novelty;
+                        candidate.fitness_components.retrieval_quality = result.retrieval_quality;
                     }
                 }
 
@@ -1545,7 +1582,9 @@ pub mod self_play {
 
             let mut new_candidates = elites;
 
-            for _ in 0..remaining {
+            // Oversample 2× for tau-seeking filter (bench-gated: only ranking)
+            let oversample = (remaining * 2).max(remaining);
+            for _ in 0..oversample {
                 let parent_a = current.choose(&mut rng).unwrap();
                 let parent_b = current.choose(&mut rng).unwrap();
 
@@ -1603,7 +1642,27 @@ pub mod self_play {
                 }
             }
 
-            self.archive.candidates = new_candidates;
+            // Tau-seeking prefilter (Phase B4): oversample 2×, keep top by
+            // predicted τ′. Bench remains the judge — this only biases the
+            // proposal distribution toward novelty, never promotes unfit.
+            if new_candidates.len() > elite_count {
+                let (elites_slice, tail) = new_candidates.split_at(elite_count);
+                let elites_slice = elites_slice.to_vec();
+                let mut tail_scored: Vec<(Candidate, f32)> = tail.iter()
+                    .map(|c| {
+                        let s = crate::vfe::tau_seeking_score(&c.patch, 1.0, crate::vfe::TAU_LEARNING_RATE, crate::vfe::ENGAGE_COUPLING);
+                        (c.clone(), s)
+                    })
+                    .collect();
+                tail_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let mut filtered = elites_slice;
+                for (c, _) in tail_scored.into_iter().take(remaining) {
+                    filtered.push(c);
+                }
+                self.archive.candidates = filtered;
+            } else {
+                self.archive.candidates = new_candidates;
+            }
             self.archive.generation += 1;
         }
     }

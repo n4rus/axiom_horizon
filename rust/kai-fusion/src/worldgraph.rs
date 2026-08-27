@@ -339,6 +339,123 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if denom > 0.0 { dot / denom } else { 0.0 }
 }
 
+/// Hash a text string into a 768-dim L2-normalized vector (bag-of-words via
+/// FNV-1a). Deterministic, offline, no Ollama needed — the retrieval quality
+/// score must be computable inside the darwin evaluator without network.
+pub fn text_hash_embedding(text: &str, dim: usize) -> Vec<f32> {
+    let mut v = vec![0.0f32; dim];
+    if text.trim().is_empty() {
+        return v;
+    }
+    for tok in text.split_whitespace() {
+        let t = tok.to_lowercase();
+        let mut h: u64 = 1469598103934665603;
+        for b in t.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        // double-mix into two indices for slightly denser signal
+        let i1 = (h as usize) % dim;
+        let i2 = ((h >> 32) as usize) % dim;
+        v[i1] += 1.0;
+        v[i2] += 0.5;
+    }
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-9 {
+        for x in &mut v { *x /= norm; }
+    }
+    v
+}
+
+impl WorldGraph {
+    /// Query by raw embedding: top-k nearest nodes by cosine.
+    pub fn query_embedding(&self, emb: &[f32], top_k: usize) -> Vec<(usize, f32)> {
+        if self.nodes.is_empty() || emb.is_empty() {
+            return Vec::new();
+        }
+        let mut scored: Vec<(usize, f32)> = self.nodes.iter().enumerate()
+            .map(|(i, n)| (i, cosine(&n.emb, emb)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().take(top_k).collect()
+    }
+
+    /// Query by text (hash-embedding).
+    pub fn query_text(&self, text: &str, top_k: usize) -> Vec<(usize, f32)> {
+        if self.nodes.is_empty() || self.nodes[0].emb.is_empty() {
+            return Vec::new();
+        }
+        let dim = self.nodes[0].emb.len();
+        let q = text_hash_embedding(text, dim);
+        self.query_embedding(&q, top_k)
+    }
+
+    /// Retrieval quality ∈ [0,1]: how grounded is `text` in the worldgraph?
+    /// Computed as domain diversity of the top-k hits plus a bridge bonus.
+    /// High score = the text pulls knowledge from many distinct domains that are
+    /// bridged in the corpus (general intelligence signal, not code-only).
+    pub fn retrieval_quality(&self, text: &str) -> f32 {
+        if self.nodes.is_empty() || self.n_clusters == 0 {
+            return 0.5;
+        }
+        let k = 12usize.min(self.nodes.len());
+        let hits = self.query_text(text, k);
+        if hits.is_empty() {
+            return 0.5;
+        }
+        // distinct domains among hits, normalized by min(k, n_clusters)
+        let mut domains = std::collections::HashSet::new();
+        for (idx, _) in &hits {
+            domains.insert(self.cluster[*idx]);
+        }
+        let denom = (k.min(self.n_clusters)) as f32;
+        let diversity = if denom > 0.0 { domains.len() as f32 / denom } else { 0.0 };
+        // bridge bonus: fraction of hit pairs that are known bridges
+        let bridges = self.bridges(8, 0.55);
+        let bridge_keys: std::collections::HashSet<String> = bridges.iter()
+            .flat_map(|b| vec![b.key_a.clone(), b.key_b.clone()])
+            .collect();
+        let mut bridge_hits = 0usize;
+        for (idx, _) in &hits {
+            if bridge_keys.contains(&self.nodes[*idx].key) {
+                bridge_hits += 1;
+            }
+        }
+        let bridge_score = bridge_hits as f32 / k as f32;
+        // 0.7 diversity + 0.3 bridge signal, clamped
+        (0.7 * diversity + 0.3 * bridge_score).clamp(0.0, 1.0)
+    }
+}
+
+/// Cached global worldgraph (lazy, process-wide). Loaded once from the first
+/// pattern that succeeds; subsequent calls reuse it. Returns a neutral 0.5 when
+/// no shards exist (bench still passes in minimal checkouts).
+pub fn retrieval_quality_cached(text: &str) -> f32 {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<WorldGraph>> = OnceLock::new();
+    let opt = CACHE.get_or_init(|| {
+        // Try repo-root absolute path first, then relative, then home-relative.
+        let candidates = [
+            "/home/l/Desktop/AxiomTree/axiom_horizon/.kai_wiki_memory.*.json".to_string(),
+            ".kai_wiki_memory.*.json".to_string(),
+            "../.kai_wiki_memory.*.json".to_string(),
+            "../../.kai_wiki_memory.*.json".to_string(),
+        ];
+        for pat in &candidates {
+            if let Ok(nodes) = WorldGraph::load_shards(pat) {
+                // quick clustering: 6 domains, 6 iters is enough for scoring
+                let g = WorldGraph::from_nodes(nodes, 6, 6, 42);
+                return Some(g);
+            }
+        }
+        None
+    });
+    match opt {
+        Some(g) => g.retrieval_quality(text),
+        None => 0.5,
+    }
+}
+
 fn nearest_centroid(emb: &[f32], centroids: &[Vec<f32>]) -> usize {
     let mut best = 0usize;
     let mut best_s = f32::NEG_INFINITY;

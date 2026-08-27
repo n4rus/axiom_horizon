@@ -39,6 +39,7 @@ mod daemon;
 mod companion;
 mod bracket;
 mod phen;
+mod criticality;
 mod fs_agent;
 mod browser;
 mod esp32;
@@ -1285,6 +1286,17 @@ fn generate_streaming(
             // continuation (the previously dead tau path pinned τ at the floor).
             if let Some(ref adv) = physics_adv {
                 cache.tau = adv.tau.clamp(phys.tau_min, phys.tau_max);
+            }
+            // Criticality homeostat (Phase B 4.5): hold generation at σ≈1.
+            // Estimate branching ratio from the next-token distribution's
+            // spread; supercritical (σ>1, degenerate repetition) contracts T,
+            // subcritical (σ<1, rigidity) opens T. Composes with tau_seeking:
+            // tau = how long you think; σ = how far activity spreads.
+            // Bench-gated downstream (only modulates T, never fitness).
+            if let Some(ref mut adv) = physics_adv {
+                let (t_reg, _regime, _sigma) =
+                    criticality::regulated_temperature(adv.temperature, &probs, 0.05, 1, 0.05, 0.15);
+                adv.temperature = t_reg.max(0.01);
             }
         }
 

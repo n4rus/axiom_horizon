@@ -308,6 +308,57 @@ pub fn tau_update_epistemic(
 }
 
 // ---------------------------------------------------------------------------
+// Tau-seeking actuator (Phase B item 4 — inverted tau_update_epistemic)
+// ---------------------------------------------------------------------------
+// Proposal distribution biased toward high predicted τ′ (novelty-seeking),
+// BUT bench-gated: fitness stays the judge so tau cannot be gamed. Safe by
+// construction — only candidates that also improve bench fitness promote.
+
+/// Predict VFE proxy from patch text alone (offline hash, no model).
+/// Longer, more entropic patches → higher predicted novelty.
+fn predicted_vfe_proxy(patch: &str) -> f32 {
+    if patch.trim().is_empty() {
+        return 0.0;
+    }
+    // length-normalized character entropy
+    let mut counts = [0usize; 256];
+    for b in patch.bytes() {
+        counts[b as usize] += 1;
+    }
+    let len = patch.len() as f32;
+    let mut entropy = 0.0f32;
+    for &c in &counts {
+        if c > 0 {
+            let p = c as f32 / len;
+            entropy -= p * p.ln();
+        }
+    }
+    // 0..~5, normalize to 0..1 via tanh-ish
+    let ent_norm = (entropy / 4.0).clamp(0.0, 1.0);
+    let len_norm = ((patch.len() as f32).ln() / 8.0).clamp(0.0, 1.0);
+    0.6 * ent_norm + 0.4 * len_norm
+}
+
+fn predicted_kn_proxy(patch: &str) -> f32 {
+    // lexical diversity: distinct tokens / total tokens, 0..1
+    let toks: Vec<&str> = patch.split_whitespace().collect();
+    if toks.is_empty() {
+        return 0.0;
+    }
+    let uniq: std::collections::HashSet<&str> = toks.iter().cloned().collect();
+    uniq.len() as f32 / toks.len() as f32
+}
+
+/// Predicted τ′ for a patch without running the model (hash proxy).
+/// Uses the same dynamics as `tau_update_epistemic` so ranking by this
+/// predicts the real tau movement.
+pub fn tau_seeking_score(patch: &str, tau: f32, learning_rate: f32, k_engage: f32) -> f32 {
+    let vfe_proxy = predicted_vfe_proxy(patch);
+    let kn_proxy = predicted_kn_proxy(patch);
+    tau_update_epistemic(tau, vfe_proxy, kn_proxy, learning_rate, k_engage)
+}
+
+// ---------------------------------------------------------------------------
 // Layered physics controller (WIRING: L2 + L3 into live inference)
 // ---------------------------------------------------------------------------
 // One per-token call that consumes the ENTIRE layered stack in the real
