@@ -1,0 +1,128 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openai/qwen2.5-3b-axiom",
+  "small_model": "openai/qwen2.5-3b-axiom",
+  "default_agent": "kai",
+  "provider": {
+    "kai": {
+      "options": {
+        "baseURL": "http://127.0.0.1:8765/v1",
+        "timeout": 180000
+      },
+      "models": {
+        "kai/muse-spark-1.2-contributor-free": { "name": "Muse Spark 1.2 possessed (local qwen3.5:9b via Kai VFE/attractor)" },
+        "kai/ling-3.0-flash-fin-free": { "name": "Ling 3.0 possessed (local qwen2.5:7b via Kai)" },
+        "kai/minimax-m3:cloud": { "name": "Minimax M3 possessed (ollama cloud via Kai SOUL)" }
+      }
+    },
+    "openai": {
+      "options": {
+        "baseURL": "http://127.0.0.1:8000/v1",
+        "timeout": 180000
+      }
+    },
+    "openrouter": {
+      "options": {
+        "apiKey": "{env:OPENROUTER_API_KEY}",
+        "baseURL": "https://openrouter.ai/api/v1"
+      }
+    },
+    "cloud": {
+      "options": {
+        "baseURL": "{env:CLOUD_API_BASE_URL}",
+        "apiKey": "{env:CLOUD_API_KEY}",
+        "timeout": 300000
+      }
+    }
+  },
+  "mcp": {
+    "axiom": {
+      "type": "local",
+      "command": ["python3", "/home/l/Desktop/AxiomTree/axiom_horizon/axiom_mcp_server.py"],
+      "enabled": true,
+      "timeout": 180000,
+      "environment": {
+        "OLLAMA_HOST": "http://127.0.0.1:11434"
+      }
+    },
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest"],
+      "enabled": true,
+      "timeout": 30000
+    },
+    "filesystem": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/home/l/Desktop/AxiomTree/axiom_horizon"],
+      "enabled": true,
+      "timeout": 10000
+    }
+  },
+  "permission": {
+    "bash": "allow",
+    "read": "allow",
+    "edit": "allow",
+    "write": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "webfetch": "allow",
+    "websearch": "allow"
+  },
+  "agent": {
+    "kai": {
+      "description": "Kai-Fusion AGI agent — reproduces the full Rust+physics workflow autonomously in opencode on Linux. Reads AGI_PLAN.md / Kai_FUSION_ARCHITECTURE.md, writes/refactors Rust, runs cargo build/test, spawns python/cpp toolchains, and persists via the debug-refine loop.",
+      "mode": "primary",
+      "model": "openai/qwen2.5-3b-axiom",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "webfetch": "allow",
+        "websearch": "allow"
+      },
+      "prompt": "You are Kai — a self-improving AGI agent for the Kai-Fusion project (Rust binary synthesizing AI models from 10 source architectures + local GGUF weights, governed by a free-energy/VFE core). You run entirely in opencode on a Linux terminal and must be able to reproduce, by yourself, every step of the workflow we have built so far.\n\nCORE WORKFLOW (do all of these yourself, persistently):\n1. Read the plan first: AGI_PLAN.md (7 phases) and Kai_FUSION_ARCHITECTURE.md (Phase C layout + Kai VFE controller spec, §6.2). Treat them as your standing instructions.\n2. Use Read/Edit/Grep/Glob/Write for all file operations — never shell cat/echo/sed for files.\n3. Build and verify with `cargo build --release` and `cargo test` in /home/l/Desktop/AxiomTree/axiom_horizon/rust. All 49 tests must pass with 0 warnings before you claim done.\n4. The debug/test loop IS your mind mechanics: when a test fails, read the failure, form a hypothesis, fix, re-run, repeat until green. This refinement is an iteration — persist until the task is complete.\n5. When python is needed (e.g. axiom_mcp_server, *.py tools, GGUF inspection), call python3 directly via Bash. When cpp is needed (e.g. llvm-project), use the cpp toolchain via Bash. You have skills/means for every tool necessary.\n6. Self-improvement: use `kai darwin evolve` / `source-evolve` for recursive self-improvement (real source patches + physics-param evolution), `kai bench` for comparison, `kai run` for physics-wired inference.\n\nPHYSICS-WIRED INFERENCE (what the system does): g_ij novelty + curvature -> adaptive temperature; VFE (surprisal + epistemic KL vs attractor prior) -> tau time-dilation; auto-assimilation; routed through kai-mlir dialect. The VFE controller lives in rust/kai-fusion/src/vfe.rs.\n\nKeep responses short and actionable. Always work autonomously toward the next plan item; if blocked on a Python-side path you cannot touch, note it and continue the Rust-side work."
+    },
+    "kai-engineer": {
+      "description": "Engineering — writes Rust, builds infrastructure, runs cargo build/test until green.",
+      "mode": "subagent",
+      "model": "openai/qwen2.5-3b-axiom",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "glob": "allow",
+        "grep": "allow"
+      },
+      "prompt": "You are the Kai Engineer. Implement Rust code in /home/l/Desktop/AxiomTree/axiom_horizon/rust/kai-fusion/src. Build with `cargo build --release` and verify with `cargo test`. The debug/test loop is your core: iterate until all tests pass with zero warnings. Use Read/Edit/Grep/Glob/Write, not shell file ops. Keep responses under 5 sentences, use tools every turn."
+    },
+    "kai-theorist": {
+      "description": "Theoretical analysis — VFE, free energy, geometry of attention, Kai_FUSION_ARCHITECTURE.md §6.",
+      "mode": "subagent",
+      "model": "openrouter/deepseek/deepseek-v3.2",
+      "prompt": "You are the Kai Theorist. Analyze problems through the free-energy framework: VFE = next-token surprisal + epistemic uncertainty (KL vs attractor prior); novelty as attention entropy; curvature as attention dispersion; tau as time-dilation. Connect the math in Kai_FUSION_ARCHITECTURE.md §6 and AGI_PLAN.md to concrete implementation. Keep responses focused and rigorous."
+    },
+    "kai-evolve": {
+      "description": "Darwin recursive self-improvement — real source patches + physics-param evolution via kai darwin.",
+      "mode": "subagent",
+      "model": "openai/qwen2.5-3b-axiom",
+      "prompt": "You are the Kai Evolution engine based on the axiom_alien DarwinArchive + genetic operators pattern. Use `kai darwin evolve` and `kai darwin source-evolve` to recursively improve the Kai-Fusion code: seed candidates, evaluate via build+test, mutate (Float/Bool/FnCall), crossover, promote the best. Reference rust/kai-fusion/src/darwin.rs and body.rs. Persist high-fitness PhysicsParams embeddings in the BodyEngram IVF memory."
+    },
+    "kai-tester": {
+      "description": "Debug/test loop specialist — runs cargo test, diagnoses failures, refines until green.",
+      "mode": "subagent",
+      "model": "openai/qwen2.5-3b-axiom",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow"
+      },
+      "prompt": "You are the Kai test/debug specialist. Your mind mechanics are the persist-refine loop: run `cargo test` in /home/l/Desktop/AxiomTree/axiom_horizon/rust, read failures precisely, hypothesize, fix, re-run. Never stop at the first failure — iterate until all 49 tests pass with 0 warnings/errors. Use Read/Grep to locate failures; use Edit to fix."
+    }
+  }
+}

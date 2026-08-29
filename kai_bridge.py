@@ -54,7 +54,19 @@ AGENCY = _agency
 OLLAMA_BASE = "http://localhost:11435"  # native VFE-enabled Ollama
 
 # Models that support tool calling natively
-TOOL_CAPABLE_MODELS = {"qwen2.5:7b", "qwen3.5:9b", "deepseek-coder-v2:16b", "gemma4:12b"}
+TOOL_CAPABLE_MODELS = {"qwen2.5:7b", "qwen3.5:9b", "deepseek-coder-v2:16b", "gemma4:12b",
+                       "kai/muse-spark-1.2-contributor-free", "kai/ling-3.0-flash-fin-free", "kai/minimax-m3:cloud",
+                       "muse-spark-1.2-contributor-free", "ling-3.0-flash-fin-free", "minimax-m3:cloud"}
+
+# Possessed routing: kai/* aliases that make zen/cloud models run locally through Kai's SOUL/VFE/attractor
+# qwen3.5:9b fails on native VFE :11435 (rope bug) so map muse-spark to qwen2.5:7b which is stable on 11435
+POSSESSED_MAP = {
+    "kai/muse-spark-1.2-contributor-free": "qwen2.5:7b",
+    "kai/ling-3.0-flash-fin-free": "qwen2.5-coder:3b",
+    "kai/minimax-m3:cloud": "minimax-m3:cloud",
+    "muse-spark-1.2-contributor-free": "qwen2.5:7b",
+    "ling-3.0-flash-fin-free": "qwen2.5-coder:3b",
+}
 
 # L1 action loop: max internal execute->observe cycles per request before we
 # stop and return whatever the model produced. 0 disables execution (the
@@ -1345,9 +1357,13 @@ def call_ollama_chat(body: dict, timeout: float = 120.0) -> dict:
     # final answer in content — disable thinking for gemma models.
     if "gemma" in body.get("model", "").lower():
         body = {**body, "think": False}
+    # Possessed minimax cloud and qwen3.5:9b rope bug — route to stock
+    # ollama (11434, cloud-auth + stable qwen3.5) rather than native VFE Ollama (11435).
+    _model = body.get("model", "")
+    _url = "http://localhost:11434/api/chat" if ("minimax" in _model.lower() or "qwen3.5" in _model.lower()) else OLLAMA_CHAT_URL
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        OLLAMA_CHAT_URL,
+        _url,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -1923,10 +1939,14 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid json"})
             return
 
-        # Parse request
+        # Parse request — possessed routing (local hosting of zen/cloud models)
         model_raw = req.get("model", "kai/tinyllama")
-        # Strip "kai/" prefix to get the Ollama model name
-        ollama_model = model_raw.split("/", 1)[-1] if "/" in model_raw else model_raw
+        if model_raw in POSSESSED_MAP:
+            ollama_model = POSSESSED_MAP[model_raw]
+            print(f"[kai_bridge] possessed {model_raw} -> {ollama_model} (Kai VFE/attractor)", file=sys.stderr)
+        else:
+            # Strip "kai/" prefix to get the Ollama model name
+            ollama_model = model_raw.split("/", 1)[-1] if "/" in model_raw else model_raw
         messages = req.get("messages", [])
         stream = req.get("stream", False)
         max_tokens = req.get("max_tokens", 256)
