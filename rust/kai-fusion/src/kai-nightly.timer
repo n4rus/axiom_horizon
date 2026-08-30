@@ -1,10 +1,11 @@
 [Unit]
-Description=Kai nightly evolution timer — runs kai-nightly.service at 03:00 daily
+Description=Kai continuous evolution — runs kai-nightly.service 24/7 until convergence (20 gens)
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
+OnCalendar=hourly
 Persistent=true
-RandomizedDelaySec=300
+RandomizedDelaySec=120
+OnUnitActiveSec=30min
 
 [Install]
 WantedBy=timers.target

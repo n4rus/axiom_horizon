@@ -6,8 +6,8 @@ After=network.target ollama.service
 Type=oneshot
 WorkingDirectory=/home/l/Desktop/AxiomTree/axiom_horizon
 Environment=OLLAMA_HOST=http://127.0.0.1:11434
-# Nightly pass: evolve physics+source, then bench to ledger. Failures logged, never fatal.
-ExecStart=/bin/bash -c 'python3 /home/l/Desktop/AxiomTree/axiom_horizon/tools/kai_wiki_ingest.py --limit 50 >> /tmp/opencode/kai_wiki.log 2>&1; /usr/local/bin/kai darwin evolve --generations 3 --physics >> /tmp/opencode/kai_nightly.log 2>&1; /usr/local/bin/kai bench >> /tmp/opencode/kai_nightly.log 2>&1; echo "=== nightly $(date -Is) done ===" >> /tmp/opencode/kai_nightly.log'
+# Continuous 24/7 pass until convergence (20 gens): wiki 50 + darwin 3 gens + bench. Stops when .kai_darwin_state.json generation>=20.
+ExecStart=/bin/bash -c 'gen=$(python3 -c "import json,pathlib; p=pathlib.Path(\".kai_darwin_state.json\"); print(json.loads(p.read_text()).get(\"generation\",0) if p.exists() else 0)" 2>/dev/null); if [ "$gen" -ge 20 ]; then echo "=== 24/7 done: gen $gen >=20 ===" >> /tmp/opencode/kai_nightly.log; exit 0; fi; python3 /home/l/Desktop/AxiomTree/axiom_horizon/tools/kai_wiki_ingest.py --limit 50 >> /tmp/opencode/kai_wiki.log 2>&1; /usr/local/bin/kai darwin evolve --generations 3 --physics >> /tmp/opencode/kai_nightly.log 2>&1; /usr/local/bin/kai bench >> /tmp/opencode/kai_nightly.log 2>&1; echo "=== 24/7 $(date -Is) gen $gen done ===" >> /tmp/opencode/kai_nightly.log'
 TimeoutStartSec=7200
 
 [Install]
