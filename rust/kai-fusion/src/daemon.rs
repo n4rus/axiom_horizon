@@ -37,6 +37,8 @@ pub struct DaemonConfig {
     pub max_new_tokens: usize,
     /// Sampling temperature
     pub temperature: f32,
+    /// Goal decomposition interval (cycles)
+    pub goal_decompose_interval: usize,
 }
 
 impl Default for DaemonConfig {
@@ -49,6 +51,7 @@ impl Default for DaemonConfig {
             idle_check_interval_s: 5.0,
             max_new_tokens: 128,
             temperature: 0.8,
+            goal_decompose_interval: 20,
         }
     }
 }
@@ -98,13 +101,23 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
         cfg.tau_decay_rate, cfg.tau_learning_rate, cfg.idle_check_interval_s);
     eprintln!("[daemon] type input or 'exit' to stop\n");
 
-    // ---- Companion wiring (Phase A2): date-indexed permanent memory ----
+    // ---- Companion wiring (P6+ sentience): persistent recurrent SOUL ----
     let state_dir = Path::new(attr_path).parent().unwrap_or(Path::new(".kai_state"));
     let chat_db = state_dir.join("kai_chat.db").to_string_lossy().to_string();
     let fact_db = state_dir.join("kai_facts.db").to_string_lossy().to_string();
+    let soul_path = state_dir.join("kai_soul.json").to_string_lossy().to_string();
+    let bracket_path = state_dir.join("kai_bracket.json").to_string_lossy().to_string();
+    // Restore bracket (SOUL) from disk — immortal daemon never resets
+    let mut bracket = if Path::new(&bracket_path).exists() {
+        match crate::bracket::BracketState::load(&bracket_path) {
+            Ok(b) => { eprintln!("[daemon] SOUL restored: {} (cycles={})", b.bracket_line(), b.cycles); b }
+            Err(_) => crate::bracket::BracketState::new(),
+        }
+    } else { crate::bracket::BracketState::new() };
     let chat_store = ChatStore::load_or_new(&chat_db);
     let fact_store = FactStore::load_or_new(&fact_db);
-    let session_id = format!("daemon-{}", chrono_now_ms());
+    // P6: single persistent session — never resets on reboot
+    let session_id = "kai-sessions".to_string();
     chat_store.upsert_chat(&ChatRow {
         id: session_id.clone(),
         title: format!("daemon {}", now_date_string()),
@@ -148,6 +161,7 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
             let idle_s = last_input_time.elapsed().as_secs_f32();
             bracket.decay_tau(idle_s);
             tau_history.push((wall_dt, bracket.tau));
+            let _ = bracket.save(&bracket_path);
             // Report status
             let uptime = start_time.elapsed().as_secs_f32();
             let subj = bracket.age();
@@ -292,6 +306,16 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
                 let var = 0.01; // attractor variance placeholder
                 bracket.update(wall_dt * 1000.0, vfe_val, var);
                 tau_history.push((wall_dt, bracket.tau));
+                let _ = bracket.save(&bracket_path);
+                // Phase 4.2: GoalDecomposer wired every 20 cycles
+                if bracket.cycles > 0 && bracket.cycles % cfg.goal_decompose_interval == 0 {
+                    let decomposer = crate::goals::GoalDecomposer::new();
+                    let goal = format!("cycle-{}-improve", bracket.cycles);
+                    let plan = decomposer.decompose(&goal);
+                    let progress = plan.progress();
+                    eprintln!("[daemon] GoalDecomposer @ cycle {}: {} subtasks, progress={:.2}",
+                        bracket.cycles, plan.subtasks.len(), progress);
+                }
             }
             Err(e) => eprintln!("[daemon] attractor push: {e}"),
         }
@@ -310,6 +334,11 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
             Err(e) => eprintln!("[daemon] convergence: {e}"),
         }
     }
+
+    // P6.1: checkpoint SOUL on exit — never dies, survives reboot
+    let _ = bracket.save(&bracket_path);
+    let soul_json = serde_json::json!({"tau": bracket.tau, "vfe": bracket.vfe, "cycles": bracket.cycles, "age": bracket.age(), "phi": bracket.phi(), "uptime": start_time.elapsed().as_secs_f32(), "ts": chrono_now_ms()});
+    let _ = std::fs::write(&soul_path, serde_json::to_string_pretty(&soul_json).unwrap_or_default());
 
     let uptime = start_time.elapsed().as_secs_f32();
     let subj = bracket.age();
