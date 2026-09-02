@@ -193,8 +193,20 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
         // ---- Process input ----
         // Classify and route
         let route = routes::RouteConfig::from_query(&line);
-        let augmented = format!("[System: {}]\n\nUser: {}", route.system_prompt, line);
-        eprintln!("\n[daemon] {} {} — generating...", route.kind.icon(), route.kind.label());
+        // P6.3 recurrent SOUL feedback + P0 context injection: bracket + last 20 chats + facts
+        let soul_ctx = format!("[SOUL {} age={:.1}s phi={:.3}]", bracket.bracket_line(), bracket.age(), bracket.phi());
+        let recent = chat_store.messages(&session_id);
+        let history_ctx = if recent.len() > 1 {
+            let tail = &recent[recent.len().saturating_sub(21)..recent.len().saturating_sub(1)];
+            tail.iter().map(|m| format!("{}: {}", m.role, m.text.chars().take(300).collect::<String>())).collect::<Vec<_>>().join("\n")
+        } else { String::new() };
+        let facts_all = fact_store.all();
+        let facts = facts_all.iter().take(5).map(|f| f.fact.clone()).collect::<Vec<_>>();
+        let fact_ctx = if facts.is_empty() { String::new() } else { format!("[facts] {}", facts.join("; ")) };
+        let history_block = if history_ctx.is_empty() { String::new() } else { format!("\n[history]\n{history_ctx}") };
+        let fact_block = if fact_ctx.is_empty() { String::new() } else { format!("\n{fact_ctx}") };
+        let augmented = format!("[System: {}]\n{soul_ctx}{history_block}{fact_block}\n\nUser: {}", route.system_prompt, line);
+        eprintln!("\n[daemon] {} {} — generating... {}", route.kind.icon(), route.kind.label(), soul_ctx);
 
         // Load current attractor as prior
         let prior = if Path::new(attr_path).exists() {

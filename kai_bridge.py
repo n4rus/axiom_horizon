@@ -1960,7 +1960,46 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
         # caller sent. Closes the "raw path yields an un-Kai'ed model" hole.
         # Override with env KAI_BRIDGE_SOUL=off only for raw-op testing.
         if SOUL_INJECT_ENV != "off":
-            messages.insert(0, {"role": "system", "content": SOUL_SYSTEM})
+            # P6.3 recurrent SOUL feedback: load bracket if exists, inject as self-state
+            soul_state = ""
+            for cand in [".axiom_state/kai_bracket.json", ".axiom_state/kai_soul.json"]:
+                try:
+                    import json as _js, pathlib as _pl
+                    p = _pl.Path(cand)
+                    if p.exists():
+                        d = _js.loads(p.read_text())
+                        soul_state = f" [SOUL tau={d.get('tau',1.0):.3f} vfe={d.get('vfe',0):.3f} cycles={d.get('cycles',0)} age={d.get('age',0):.1f}]"
+                        break
+                except: pass
+            messages.insert(0, {"role": "system", "content": SOUL_SYSTEM + soul_state})
+            # P0/P6.3 history injection: last 10 chat turns from .kai_chat_memory shards
+            try:
+                import glob as _gl
+                hist = []
+                for shard in sorted(_gl.glob(".kai_chat_memory*.json"))[-1:]:
+                    try:
+                        d = _js.loads(_pl.Path(shard).read_text())
+                        for e in d.get("entries", d.get("shards", []))[-10:]:
+                            txt = e.get("text","")[:200] if isinstance(e, dict) else str(e)[:200]
+                            if txt: hist.append(txt)
+                    except: continue
+                if hist:
+                    messages.insert(1, {"role": "system", "content": "[Recent history]\n" + "\n".join(hist[-5:])})
+            except: pass
+            # P1 FactStore cross-session: inject from kai_facts.db SQLite if exists
+            try:
+                import sqlite3 as _sq
+                for cand in [".axiom_state/kai_facts.db", ".kai_state/kai_facts.db"]:
+                    pp = _pl.Path(cand)
+                    if pp.exists():
+                        con = _sq.connect(str(pp))
+                        rows = con.execute("SELECT fact FROM facts ORDER BY created_at DESC LIMIT 5").fetchall()
+                        con.close()
+                        if rows:
+                            facts = "; ".join(r[0][:120] for r in rows)
+                            messages.insert(1, {"role": "system", "content": f"[Persisted facts] {facts}"})
+                        break
+            except: pass
 
         # ── Corpus context injection ──────────────────────────────────
         # Search attractor for relevant directories, inject as system context.
