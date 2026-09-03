@@ -205,7 +205,11 @@ pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMet
         let fact_ctx = if facts.is_empty() { String::new() } else { format!("[facts] {}", facts.join("; ")) };
         let history_block = if history_ctx.is_empty() { String::new() } else { format!("\n[history]\n{history_ctx}") };
         let fact_block = if fact_ctx.is_empty() { String::new() } else { format!("\n{fact_ctx}") };
-        let augmented = format!("[System: {}]\n{soul_ctx}{history_block}{fact_block}\n\nUser: {}", route.system_prompt, line);
+        // Self-reasoning: WorldGraph retrieval_quality + metacognition prompt
+        let rq = crate::worldgraph::retrieval_quality_cached(&line);
+        let wg_ctx = format!("[worldgraph rq={:.3} domains=6]", rq);
+        let meta_ctx = "[metacognition: after answering, rate confidence 0-1 and one failure mode]";
+        let augmented = format!("[System: {}]\n{soul_ctx} {wg_ctx}\n{meta_ctx}{history_block}{fact_block}\n\nUser: {}", route.system_prompt, line);
         eprintln!("\n[daemon] {} {} — generating... {}", route.kind.icon(), route.kind.label(), soul_ctx);
 
         // Load current attractor as prior

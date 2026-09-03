@@ -2001,6 +2001,19 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
                         break
             except: pass
 
+        # ── Self-reasoning + metacognition (bridge) ─────────────────────
+        user_text = " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
+        try:
+            # metacognition prompt — Kai rates own confidence
+            messages.insert(0, {"role": "system", "content": "[metacognition: after answering, rate confidence 0-1 and state one way you could be wrong]"})
+            # worldgraph rq hint via corpus similarity as proxy (python bridge can't call Rust worldgraph directly)
+            if user_text.strip() and hasattr(self, 'corpus') and self.corpus:
+                _rq_hits = self.corpus.search(user_text, top_k=1)
+                if _rq_hits:
+                    _rq = _rq_hits[0].get("similarity", 0)
+                    messages.insert(0, {"role": "system", "content": f"[worldgraph self-reasoning rq={_rq:.3f} — ground answer in retrieved corpus]"})
+        except: pass
+
         # ── Corpus context injection ──────────────────────────────────
         # Search attractor for relevant directories, inject as system context.
         # Knobs are darwin-evolvable via the live params file: recall_top_k
