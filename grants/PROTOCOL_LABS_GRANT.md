@@ -103,7 +103,7 @@ For data-center workloads (cooling optimization, GPU kernel selection, memory pr
 
 **Note on compensation:** $800/month for full-time work is below any international dev rate. It is a living-expenses grant, not a salary. The applicant is funding the rest of the gap from the existing bounty earnings (1.05 USDC Base) and savings. The grant removes the survival pressure so the work can be done at all.
 
-**Why USDT, not BRL:** Brazilian recipients face 3–8% spread on USD→BRL conversions plus IOF tax. USDT (or USDC) received on Base or Polygon allows the applicant to convert to BRL at market rate with no remittance intermediary. Preference: **USDC on Base** (cheaper gas, no Polygon spam) or **USDT on Polygon** as fallback.
+**Why USDT, not BRL:** Brazilian recipients face 3–8% spread on USD→BRL conversions plus IOF tax. USDT received on Binance converts to BRL at market rate with no remittance intermediary. Preference: **USDT on Binance** (BEP20 preferred for low fees; funder's cheapest supported network acceptable).
 
 ---
 
@@ -184,7 +184,7 @@ The integration is not theoretical — it is in the budget, on the timeline, and
 - [ ] README.md, MANUAL.md, this `PROTOCOL_LABS_GRANT.md` all in repo under `/grants/`
 - [ ] 2-minute Loom video recorded: `cargo test --release` green + `kai darwin self-play` running + completion output on screen
 - [ ] KYC information ready (CPF, proof of address, self-employed / autônomo status)
-- [ ] Wallet address for USDT/USDC on Base or Polygon confirmed
+- [ ] USDT deposit address on Binance confirmed
 - [ ] Submit to: https://github.com/protocol/research-grants (or current PL grants intake)
 
 ---

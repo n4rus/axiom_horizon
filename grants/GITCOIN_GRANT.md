@@ -100,7 +100,7 @@ Direct grant via Gitcoin Grants Stack:
 - Set initial matching pool = 0 (bootstrap from self if needed)
 - Receive matching once the round opens, or accept direct contributions
 
-Preferred payout: USDC on Base (cheaper gas, fewer intermediaries).
+Preferred payout: USDT on Binance (BEP20 preferred; funder's cheapest supported network acceptable).
 
 ---
 
