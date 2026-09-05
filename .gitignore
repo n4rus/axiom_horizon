@@ -182,8 +182,6 @@ Thumbs.db
 !LICENSE
 !README.md
 !MANUAL.md
-!GITHUB_TAGS.md
-!CHECKLIST_TOMORROW.md
 # Grants directory contents ARE allowed (subdir is not ignored)
 !grants/
 !grants/**/*.md
