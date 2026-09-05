@@ -3,8 +3,8 @@
 **Applicant:** l (AxiomTree) — São José dos Pinhais, Paraná, Brazil
 **Project:** kai-fusion + kai-mlir
 **Requested amount:** $12,000 USDT (over 6 months)
-**Application date:** 2026-09-01
-**Repo:** github.com/AxiomTree/axiom_horizon (to be set public upon submission)
+**Application date:** 2026-09-05
+**Repo:** github.com/n4rus/axiom_horizon (to be set public upon submission)
 
 ---
 
@@ -31,7 +31,7 @@ Modern compute infrastructure has two structural problems that compound each oth
 
 **Problem B — Self-improving AI is a cloud-only product.** Every Darwinian / evolutionary / "agent that improves itself" demo in 2026 either requires a hosted LLM API (vendor lock-in, monthly bill, no reproducibility) or runs only on a single box with no networking. There is no open, reproducible, distributed version that researchers can run on commodity hardware and audit the full state of.
 
-**kai-fusion solves both.** It runs entirely on local CPU/GPU. Its state is small (<1GB), inspectable, and checkpointable. The `kai-mlir` dialect makes the optimization auditable at the IR level — you can diff two versions of the same kernel and see exactly what the attractor engine decided. And the design is naturally distributable: each node evolves locally and can share attractor snapshots with peers, with IPFS providing content-addressed persistence so that any node can recover the full evolutionary history from any other node.
+**kai-fusion solves both.** It runs entirely on local CPU/GPU. Its core engine state is small (<1GB), inspectable, and checkpointable; the semantic memory corpus scales with ingestion and is archived as content-addressed shards. The `kai-mlir` dialect makes the optimization auditable at the IR level — you can diff two versions of the same kernel and see exactly what the attractor engine decided. And the design is naturally distributable: each node evolves locally and can share attractor snapshots with peers, with IPFS providing content-addressed persistence so that any node can recover the full evolutionary history from any other node.
 
 For data-center workloads (cooling optimization, GPU kernel selection, memory pressure tuning), this is the missing layer. For scientific computing, it is a way to discover kernels that hand-tuned codegen misses. For AGI research, it is one of the few open systems where "the model improved itself and here is the proof" is reproducible.
 
@@ -44,8 +44,8 @@ For data-center workloads (cooling optimization, GPU kernel selection, memory pr
 - `kai-fusion` core engine — 312 tests GREEN, 0 warnings across `cargo build --release` (Rust 1.97)
 - `kai-mlir` — LLVM dialect for fused VFE/curvature operations; first-pass lowering verified
 - `kai darwin self-play` — full Darwinian evolve loop; runs to completion, outputs best_fitness at end
-- 27 / 10,000 fuzz runs passing on the autonomous-bounty smart contract (Solidity + forge) with **0 reentrancy, 0 balance bug** per slither
-- 79,907 Wikipedia entries absorbed into `.kai_wiki_memory.*.json` as semantic attractor memory
+- 25 / 10,000 fuzz runs passing on the autonomous-bounty smart contract (Solidity + forge) with **0 reentrancy, 0 balance bug** per slither
+- 79,907 Wikipedia entries absorbed into a 96-shard semantic attractor memory (12GB archived corpus; ingestion method reproduced in `wiki_2_done.md`, in repo)
 - `kai_physics_bench --fuse` nightly harness (3 local teacher models → fused queries → JSONL)
 
 ### What this grant funds (Month-by-Month)
@@ -71,10 +71,10 @@ For data-center workloads (cooling optimization, GPU kernel selection, memory pr
 - Compare `kai-fusion`-optimized kernel vs hand-tuned baseline on 5 standard workloads
 - Publish numbers in `BENCHMARKS.md`
 
-**Month 5 — kai-mlir upstream attempt**
-- Draft an RFC for the dialect against the official MLIR project
-- Get review from at least one MLIR maintainer
-- If accepted, submit the first pass; if not, keep the dialect in-tree as a vendored submodule
+**Month 5 — kai-mlir working proof**
+- Document all dialect passes with before/after IR examples
+- Verify end-to-end lowering (VFE/curvature op → MLIR → native) in tests
+- Draft the upstream RFC from the proven implementation; submit on merit
 
 **Month 6 — Sustainability + final report**
 - Write `MAINTENANCE.md` so anyone can run, reproduce, and patch the system
@@ -139,7 +139,8 @@ Eight years of independent study, self-taught. Output is verifiable above: 312 g
 | `forge test --fuzz-runs 10000` — 25 GREEN; 0 failed; 1 skipped | In repo       | Foundry output archived        |
 | `slither .` — 0 reentrancy, 0 balance bug        | In repo       | Slither JSON archived          |
 | `kai darwin self-play` — runs to completion (140.66 on Aug 2026 run) | In repo       | log output        |
-| 79,907 wiki entries → semantic memory            | In repo       | 96 `.kai_wiki_memory.*.json`   |
+| fuse 12b-tier bench — PHYSICS WINS +0.46 (11/3), consistency 0.970 | In repo       | `wiki_2_done.md` bench ladder |
+| 79,907 wiki entries → semantic memory            | Archived      | 96-shard 12GB corpus; method in `wiki_2_done.md` (in repo) |
 | `kai-mlir` LLVM dialect                          | First pass    | In repo, IR-level tests green  |
 | Bounty payout                                    | On-chain      | Base 0x8f36...0eb5             |
 

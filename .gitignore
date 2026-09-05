@@ -34,7 +34,6 @@ opencode_secrets.json
 .kai_wiki_memory.*.json
 .kai_wiki_memory.*.json.*
 kai_wiki_memory/
-wiki_2_done.md
 wiki_filtered/
 wiki_script.md
 .kai_doc_memory.*.json

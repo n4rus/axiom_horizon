@@ -3,8 +3,8 @@
 **Applicant:** l (AxiomTree) — São José dos Pinhais, Paraná, Brazil
 **Project:** kai-fusion + kai-mlir
 **Requested amount:** $12,000 (over 6 months, deployed via Grants Stack direct grant)
-**Application date:** 2026-09-01
-**Repo:** github.com/AxiomTree/axiom_horizon (to be set public upon submission)
+**Application date:** 2026-09-05
+**Repo:** github.com/n4rus/axiom_horizon (to be set public upon submission)
 
 ---
 
@@ -28,7 +28,7 @@ Most "AI that improves itself" demos in 2026 require a hosted LLM API. They are:
 kai-fusion is none of those. It is:
 
 - **Reproducible** — `cargo test --release` produces the same green
-- **Auditable** — every attractor state is checkpointed, every Darwinian generation is content-addressed, every LLVM pass diff is visible
+- **Auditable** — every attractor state is checkpointed, Darwinian generations content-addressed as of Month 3, every LLVM pass diff visible
 - **Distributable** — libp2p sync (Month 2), IPFS persistence (Month 3)
 - **Cheap to run** — local CPU/GPU, no API bill
 
@@ -45,7 +45,7 @@ This makes it a genuine public good: any researcher, anywhere, can run it on com
 | 3     | IPFS persistence of evolutionary snapshots                 | Designed       |
 | 4     | Public benchmark harness (Docker, 5 workloads)             | Prototype only |
 | 5     | MLIR dialect upstream RFC                                  | First pass     |
-| 6     | Sustainability docs + final report; maintenance continues solo; follow-on scope priced on delivered results | In this grant  |
+| 6     | Sustainability docs + final report                             | In this grant  |
 
 ---
 
@@ -76,7 +76,7 @@ This makes it a genuine public good: any researcher, anywhere, can run it on com
 
 ## Repo
 
-`github.com/AxiomTree/axiom_horizon`
+`github.com/n4rus/axiom_horizon`
 
 Key paths:
 - `rust/kai-fusion/` — Darwinian attractor engine
