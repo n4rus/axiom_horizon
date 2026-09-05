@@ -77,7 +77,6 @@ pub struct DaemonMetrics {
 /// Loads the model and runs the fixed-point loop until `stop` is signaled.
 pub fn run_daemon(cfg: &DaemonConfig, stop: Arc<AtomicBool>) -> Result<DaemonMetrics, String> {
     let start_time = Instant::now();
-    let mut bracket = bracket::BracketState::new();
     let mut total_generations: u64 = 0;
     let mut tau_history: Vec<(f32, f32)> = Vec::new();
     let mut last_input_time = Instant::now();

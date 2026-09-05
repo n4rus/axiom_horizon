@@ -5,6 +5,10 @@
 //! Mirrors the Android `MemoryDb.kt` contract so `kai_state_export.json`
 //! moves freely between phone and desktop.
 
+//! Note: several Tier 1/2/4 APIs are exercised only by unit tests in the
+//! binary profile (daemon uses a subset). Allowed to stay as stable API.
+#![allow(dead_code)]
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;

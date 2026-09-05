@@ -21,6 +21,8 @@
 /// weight exceeds `threshold`; σ = mean out-degree over firing units.
 ///
 /// Returns σ ≥ 0. Empty input → σ = 0 (subcritical by convention).
+/// Public API + unit-test covered; binary profile uses `branching_ratio_n`.
+#[allow(dead_code)]
 pub fn branching_ratio(weights: &[f32], threshold: f32) -> f32 {
     if weights.is_empty() {
         return 0.0;

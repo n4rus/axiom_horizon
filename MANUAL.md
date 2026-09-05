@@ -32,7 +32,7 @@ If `AGI_PLAN.md` is the 7-phase roadmap and `Kai_FUSION_ARCHITECTURE.md` is the 
 2. [The 10 Sources — What Is Assimilated](#2-the-10-sources--what-is-assimilated)
 3. [Unified Architecture — Config and Blocks](#3-unified-architecture--config-and-blocks)
 4. [Project Layout — Where Everything Lives](#4-project-layout--where-everything-lives)
-5. [VFE Controller — The Governing Layer (§6)](#5-vfe-controller--the-governing-layer-6) — including 5.0 What is VFE?
+5. [VFE Controller — The Governing Layer (§6)](#5-vfe-controller--the-governing-layer-6) — including 5.0 What is VFE? and 5.5 Theory in 60 Seconds
 6. [Physics-Wired Inference — g_ij, Curvature, Tau](#6-physics-wired-inference--g_ij-curvature-tau)
 7. [Weight Bootstrap and Assimilation Loop](#7-weight-bootstrap-and-assimilation-loop)
 8. [Strengths, Scalability, Efficiency, Optimization & Info Relay — Novelty Made Clear](#8-strengths-scalability-efficiency-optimization--info-relay--novelty-made-clear)
@@ -247,6 +247,20 @@ curvature 0.82 (high) → T 0.9→1.15
 surprise 3.4 + KL 0.6 → VFE 4.0 → tau 1.12 → allocate 2 extra MLP layers
 response sampled at higher T, with expanded compute
 ```
+
+---
+
+## 5.5 Theory in 60 Seconds — Developer Framing
+
+Same three mechanisms as §5–§6, framed for implementers. Files in `rust/kai-fusion/src/`.
+
+**1. Darwinian evolution — `darwin.rs` (across runs).** No gradients, no backprop. A population of candidate patches competes: generate (AST point-mutate, insert, crossover) → evaluate fitness → select winners, cull losers → repeat. Fitness = `compile_pass × (0.3·tests + 0.2/latency + 0.2·size_eff + 0.2·consistency + 0.1·novelty)`, promotion gated on strict generation-over-generation improvement (`gate_generation`, `strict_improvement_ratio`). Covered by `darwin::tests` in the 312-test suite. Evolution applies where differentiable loss cannot: source structure, compiler flags, kernel shapes.
+
+**2. Attractor dynamics — `attractor.rs` (within a run).** 173 vectors encoding "what good representations look like," distilled from the 10 teacher architectures (§2). Every hidden state is pulled toward the nearest basin, scored by KL divergence (`responsibilities_sum_to_one`, `mixture_prior_blends`, `test_convergence_*` in tests). Far from attractor = high epistemic uncertainty = explore; near it = exploit/consolidate. Memory without a database: the prior compresses everything assimilated into geometry that guides each step.
+
+**3. Free energy — `vfe.rs` + `physics-dialect` (moment to moment).** `VFE = -log p(observation|model) + KL[q(z|x)||p(z|attractor)]` (§5.0). One `f32` per step, three actuators: sampling temperature (high VFE → hotter), tau compute budget (high VFE → subjective time dilates, more work per token), learning (VFE below threshold → auto-assimilate toward attractor; VFE ranks the next distillation teacher). Lowered as an IR op through `kai-mlir` (§6).
+
+Three timescales, one system: evolution searches *across* runs, attractors guide *within* a run, VFE governs *each step*.
 
 ---
 

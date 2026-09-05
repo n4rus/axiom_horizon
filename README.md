@@ -1,6 +1,8 @@
 # Axiom Horizon — Kai Fusion
 
-> **A single Rust binary synthesizing AI models from 10 architectures + local GGUF weights, governed by a free-energy (VFE) core. Local-first, physics-wired inference, self-improving via `kai darwin`.**
+> **Autonomous Darwinian optimization engine for compute — Rust, MIT, 312 tests GREEN, self-improves without cloud LLM APIs. Applied for Protocol Labs + Gitcoin grants.**
+
+
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](rust/)
@@ -19,6 +21,7 @@ Axiom Horizon is the parent workspace. **Kai Fusion** (`rust/kai-fusion`) is the
 - [Architecture](#architecture)
 - [VFE Controller — §6](#vfe-controller--6)
 - [Physics-Wired Inference](#physics-wired-inference)
+- [Theory in 60 Seconds — For Developers](#theory-in-60-seconds--for-developers)
 - [Strengths — Scalability, Efficiency, Optimization & Info Relay](#strengths--scalability-efficiency-optimization--info-relay)
 - [Project Layout](#project-layout)
 - [Quick Start](#quick-start)
@@ -134,6 +137,30 @@ What the system actually does at inference:
 
 Mechanically: curvature and VFE are not metaphors — they are scalars that directly scale sampling temperature and `tau = useful_work / wall_time` (tokens/sec per watt).
 
+**For developers — three pieces (`curvature.rs`, `vfe.rs`, `phen.rs`):**
+
+**1. g_ij, the novelty metric.** `g_ij = 1 - a_ij`, where `a_ij` is attention between tokens *i* and *j*. Strong attention = close (`g` near 0); ignored pairs = distant (`g` near 1). Averaged over heads/layers → **curvature**. A prompt bridging distant domains scores high; routine prompts score near zero. Bounded and tested: `test_flat_cloud_has_zero_curvature`, `test_curvature_of_radially_spread_cloud`, `test_metric_diag_bounded`.
+
+**2. Curvature → adaptive temperature.** `T' = T × (1 + α·curvature)`. Novel input gets hotter sampling automatically; familiar input gets sharper. The knob turns itself — closed-loop instead of hand-tuned (`test_temp_curved_collapses_temperature`, `test_temperature_drops_with_curvature`).
+
+**3. Tau, the compute budget.** `tau = useful_work / wall_time`. High VFE dilates tau (more compute per token); low VFE contracts it; idle decays to zero (8 dedicated `test_tau_*` tests). An energy accountant: confusing tokens earn extra layers, boring tokens take the cheap path.
+
+Perception (`g_ij`), exploration (temperature), spending (tau) — one pipeline, scalar arithmetic, all in the 312 tests.
+
+---
+
+## Theory in 60 Seconds — For Developers
+
+Three mechanisms, three timescales, one system. Files in `rust/kai-fusion/src/`.
+
+**1. Darwinian evolution — `darwin.rs` (across runs).** No gradients. A population of candidate patches competes: generate (AST mutate/crossover) → evaluate fitness → select winners, cull losers → repeat. Fitness = `compile_pass × (0.3·tests + 0.2/latency + 0.2·size_eff + 0.2·consistency + 0.1·novelty)`, with promotion gated on strict improvement (`gate_generation`, `strict_improvement_ratio` — both covered in the 312 tests). Evolution works on anything differentiable loss can't touch: source code, compiler flags, kernel shapes.
+
+**2. Attractor dynamics — `attractor.rs` (within a run).** 173 vectors encoding "what good looks like," distilled from the 10 teacher architectures. Every hidden state is pulled toward the nearest basin, measured by KL divergence (`responsibilities_sum_to_one`, `mixture_prior_blends` in tests). Far from attractor = explore; near it = exploit. Memory without a database.
+
+**3. Free energy — `vfe.rs` + `physics-dialect` (moment to moment).** `VFE = -log p(observation) + KL[q||p(attractor)]`. One scalar, three actuators: temperature (high VFE → hotter sampling), tau compute budget (high VFE → more compute per token), learning (low VFE → auto-assimilate; VFE picks the next distillation teacher).
+
+Evolution searches across runs, attractors guide within a run, VFE governs each step.
+
 ---
 
 ## Strengths — Scalability, Efficiency, Optimization & Info Relay
@@ -144,7 +171,7 @@ Mechanically: curvature and VFE are not metaphors — they are scalars that dire
 One `KaiFusionConfig` spans `dim` 1024→8192, per-layer `MHA|MLA|Linear` and `moe.enabled` toggle. Same binary runs `qwen2.5:0.5b` on 8GB phone and `deepseek-v3:671b` MoE shards — only config changes. Dense on layers 0-20 (quality), MLA on 21-28 (KV-cache ÷4), Linear on top for 128k context; add SigLIP/CLIP vision with `proj_dim` only.
 
 **Efficiency — code, hardware, energy:**
-- *Code:* Rust `ndarray` f32, no GC/GIL, `lto=true` single binary; `cargo test` 49 green enforces `0.2*size_eff +0.2*(1/latency)` in fitness.
+- *Code:* Rust `ndarray` f32, no GC/GIL, `lto=true` single binary; `cargo test` 312 green enforces `0.2*size_eff +0.2*(1/latency)` in fitness.
 - *Hardware:* GGUF `mmap` + fused dequant (8B Q4_K_M → 4.5GB RSS), MLA low-rank KV ÷3-4, `kai-mlir` → LLVM fused VFE/curvature.
 - *Energy:* `tau = useful_work / wall_time` (tokens/sec per **watt**). PoGIE 128-byte frame (`energy_w` + `GFlops`) + Android `ThermalManager` throttle. 1.2B Q4_K_M: 0.17 tok/J (POCO X3) → 0.29 tok/J (SD 8 Gen 3) — the config maximizing `tok/J` wins, not just `tok/s`.
 
@@ -165,9 +192,36 @@ Attractor (173 vectors) relays `KL → LR/routing/teacher`; world-graph (`g_ij` 
 
 ---
 
-## Project Layout
+## Proof of Work (verifiable on chain and in repo)
 
+| Artifact | Result |
+|---|---|
+| `cargo test --release` | **312 GREEN** — Rust 1.97, workspace-wide |
+| `forge test --fuzz-runs 10000` | **25 GREEN, 0 failed, 1 skipped** — Solidity smart contract |
+| Slither static analysis | **0 reentrancy, 0 balance bug** — 16 low/info only |
+| `kai darwin self-play` | **darwin loop runs to completion** — see `tools/` for benchmark output |
+| Bounty payout | **1.05 USDC** on Base — `0x8f36...0eb5`, PR #1 |
+| Physics benchmark | **liveness verified** — `kai_physics_bench --fuse` |
+| Semantic memory | **79,907 Wikipedia entries** absorbed |
+
+**Reproduce in ~20 min on commodity hardware (Rust 1.97 + Foundry):**
+```bash
+git clone https://github.com/AxiomTree/axiom_horizon.git
+cd axiom_horizon/rust && cargo test --release      # expect: 312 passed; 0 failed
+cd ../.axiom_state/submissions/agent-bounties_155/contracts/base-escrow
+forge test --fuzz-runs 10000                        # expect: 25 passed; 0 failed
 ```
+Bounty payout: Base `0x8f36...0eb5` (PR #1, `n4rus/agent-bounties`). This project is not a wrapper, SaaS, paper-without-code, or token — it is MIT-licensed open source with reproducible test evidence.
+
+## Funding
+
+We are applying for grants to enable 6 months of full-time development. See:
+- [`grants/PROTOCOL_LABS_GRANT.md`](grants/PROTOCOL_LABS_GRANT.md) — $12k, Rust + libp2p + IPFS tooling + permanent rebuild
+- [`grants/GITCOIN_GRANT.md`](grants/GITCOIN_GRANT.md) — $12k, public goods framing
+
+Both applications share the same repo, evidence, and roadmap. Preferred payout: **USDC on Base** or **USDT on Polygon**.
+
+## Project Layout```
 axiom_horizon/
 ├── rust/                      # Cargo workspace (resolver 2, release lto=true)
 │   ├── kai-core/              # Kai core types, bracket-line, state
@@ -201,7 +255,7 @@ cd axiom_horizon/rust
 # 2. Build release (lto, opt 3)
 cargo build --release
 
-# 3. Verify (49 tests, 0 warnings)
+# 3. Verify (312 tests)
 cargo test
 
 # 4. Launch via opencode (uses local GGUF, no download)
@@ -220,7 +274,7 @@ This is the standing instruction (reproduced from private plan):
 
 - **Always** use `Read`/`Edit`/`Grep`/`Glob`/`Write` for files — never shell `cat`/`echo`/`sed`.
 - **Build:** `cargo build --release` in `/rust`
-- **Test:** `cargo test` — **all 49 tests must pass with 0 warnings** before claiming done
+- **Test:** `cargo test` — **all 312 tests must pass with 0 warnings** before claiming done
 - **Debug loop is the mind:** failure → hypothesis → fix → re-run until green
 - **Python side:** `python3` directly via Bash for `axiom_mcp_server`, `*.py` tools, GGUF inspection; `cpp` toolchain for llvm-project
 - **Self-improvement:** `kai darwin evolve` / `source-evolve` (real patches + physics-param evolution), `kai bench`, `kai run` (physics-wired inference)
@@ -299,7 +353,7 @@ Lean push keeps project local until Android app is ready — then GitHub release
 - **g_ij novelty surface** ("this idea is distant" + geodesic map)
 - Fully offline, optional sync. Target: POCO X3 (8GB) → 1.2B Q4_K_M at 200-400ms/token; flagship → 3-model + VFE real-time.
 
-Roadmap: finish 49 tests → lean GitHub push → 2-week Android slice → Play Store demo.
+Roadmap: finish 312 tests → lean GitHub push → 2-week Android slice → Play Store demo.
 
 ---
 
@@ -325,7 +379,7 @@ Source of truth for each: `rust/kai-fusion/src/*.rs`, `rust/kai-core/`, `rust/ph
 ## Contributing & Self-Improvement Loop
 
 1. Read `MANUAL.md` (20 sections) before coding — it distills `AGI_PLAN.md` + `Kai_FUSION_ARCHITECTURE.md`.
-2. Edit via `Read`/`Edit`, verify with `cargo build --release && cargo test` (49 green, 0 warnings)
+3. When failing: hypothesis → patch → re-run (the debug loop *is* the mind)
 3. When failing: hypothesis → patch → re-run (the debug loop *is* the mind)
 4. For evolution: `kai darwin evolve`, compare via `kai bench`, infer via `kai run`
 

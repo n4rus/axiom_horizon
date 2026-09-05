@@ -184,6 +184,9 @@ Thumbs.db
 !MANUAL.md
 !GITHUB_TAGS.md
 !CHECKLIST_TOMORROW.md
+# Grants directory contents ARE allowed (subdir is not ignored)
+!grants/
+!grants/**/*.md
 session-*.md
 session-ses_*.md
 session_*.md
@@ -208,4 +211,23 @@ android/
 # .gitignore         <- This file
 # ==================================================
 setup-dnsmasq-nginx.sh
+# ==================================================
+# SENSITIVE — NEVER COMMIT
+# ==================================================
+WIRE_KAI_OPENCODE.sh
+WIRE_KAI_OPENCODE_KEYS.txt
+setup-lituour-full.sh
+ounty_poll
+kai_phone_bundle/
+.kai_wiki_progress.json
+CONTEXT.md
+# ==================================================
+# BOOK EDITING (work in progress, not part of grant)
+# ==================================================
+edit_utext.py
+utext_clean.txt
+utext_backup.odt
+utext_edited.odt
+EDIT_CHECKLIST.md
+cloudflare-tunnel.sh
 # local infra
