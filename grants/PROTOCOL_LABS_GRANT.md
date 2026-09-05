@@ -127,11 +127,9 @@ For data-center workloads (cooling optimization, GPU kernel selection, memory pr
   - `kai_physics_bench --fuse` — autonomous optimization loop
   - 79,907 entries absorbed into long-term semantic memory
 
-### Why this applicant delivers despite chronic conditions
+### Track record and working conditions
 
-The applicant has been working through daily chronic back pain and episodic cluster headaches (often multi-day) for the entire 8-year self-study period. The motivation is not financial optimization but a double aim: (1) **advance the science of autonomous optimization and self-improving systems** as a contribution to human knowledge, and (2) **produce artifacts that are useful today and durable for the future** — code, benchmarks, papers, and runnable demos that outlive any single grant cycle.
-
-This is not a person who disappears when conditions get hard. It is a person who has been getting harder work done, in worse conditions, for longer than most funded teams have existed. The grant removes the survival ceiling so the work can compound.
+Eight years of independent study, self-taught. Output is verifiable above: 312 green tests, 0 warnings, 25/10,000 fuzz, on-chain bounty payout. The applicant works with chronic back pain and cluster headaches under doctor-prescribed pacing; the medical budget line exists so treatment never competes with development time. Aim: advance autonomous optimization as human knowledge and ship durable artifacts — code, benchmarks, runnable demos.
 
 ### Past work — what was published and what is in repo
 

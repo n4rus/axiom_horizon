@@ -66,11 +66,11 @@ This makes it a genuine public good: any researcher, anywhere, can run it on com
 
 ## Why this applicant
 
-- 8 years of independent study, self-taught, no formal CS degree
-- Ships anyway: 312 green tests, 0 warnings, 25/10000 fuzz green, 0 reentrancy, 0 balance bug
-- Chronic back pain + cluster headaches, working through it daily
+- 8 years of independent study, self-taught
+- Evidence first: 312 green tests, 0 warnings, 25/10000 fuzz green, 0 reentrancy, 0 balance bug
 - Bounty payout received (Base 1.05 USDC) — proof of shipping on chain
-- Motivation: advance the science of autonomous optimization and produce artifacts useful to present and future generations. Not a financial optimization, a human-knowledge optimization.
+- Works with chronic back pain and cluster headaches under doctor-prescribed pacing (see medical budget line)
+- Aim: advance autonomous optimization as human knowledge and ship durable artifacts. Not a financial optimization, a human-knowledge optimization.
 
 ---
 
