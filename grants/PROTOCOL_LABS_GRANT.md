@@ -76,10 +76,10 @@ For data-center workloads (cooling optimization, GPU kernel selection, memory pr
 - Get review from at least one MLIR maintainer
 - If accepted, submit the first pass; if not, keep the dialect in-tree as a vendored submodule
 
-**Month 6 — Maintenance + handoff**
-- Write `MAINTENANCE.md` for what happens after the grant ends
-- Apply for Round 2 of the grant ($25k–$50k) to fund a 2-engineer team
+**Month 6 — Sustainability + final report**
+- Write `MAINTENANCE.md` so anyone can run, reproduce, and patch the system
 - Publish a final report to the Protocol Labs community
+- Maintenance continues solo regardless of follow-on funding; expanded scope (collaborators, hardware, audits) to be proposed and priced on the results delivered in months 1–6
 
 ### What this grant does NOT fund
 - Hosting fees for closed-source cloud services
@@ -149,14 +149,14 @@ This is not a person who disappears when conditions get hard. It is a person who
 
 ## 6. Maintenance Plan (after 6 months)
 
-If the grant succeeds, the maintenance model is:
+Maintenance continues solo regardless of follow-on funding — this is the applicant's life's work, and the codebase is designed so one contributor can read it, run it, and ship a patch. Expanded scope (collaborators, hardware, audits) to be proposed and priced on the results delivered in months 1–6.
 
-1. **Sustainability via Round 2** — apply for the next tier of PL funding ($25k–$50k) to cover a 2-engineer team (1 Rust core, 1 MLIR/devtools)
-2. **Bounty revenue** — continue shipping small bounties to keep cash flow while the team grows
-3. **Optional Gitcoin / Optimism RPGF** — if `kai-fusion` becomes adopted as public infrastructure, retroactive public-goods funding becomes a non-dilutive option
+If the grant succeeds, the sustaining model is:
+
+1. **Continued solo maintenance** — benchmark harness, libp2p sync, and dialect all remain runnable from the public repo with no funding required
+2. **Bounty revenue** — continue shipping small bounties to keep cash flow between grants
+3. **Retroactive public-goods funding** — if `kai-fusion` becomes adopted infrastructure, RPGF-style rounds pay for delivered impact (claimable only after delivery, which is the point of months 1–6)
 4. **Independence clause** — the project remains MIT-licensed open source regardless of future funding. No lock-in to any single grantor.
-
-The codebase does not require a company to maintain. A single contributor with a 5-year-old laptop can read it, run it, and ship a patch. That is by design.
 
 ---
 

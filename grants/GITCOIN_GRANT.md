@@ -45,7 +45,7 @@ This makes it a genuine public good: any researcher, anywhere, can run it on com
 | 3     | IPFS persistence of evolutionary snapshots                 | Designed       |
 | 4     | Public benchmark harness (Docker, 5 workloads)             | Prototype only |
 | 5     | MLIR dialect upstream RFC                                  | First pass     |
-| 6     | Maintenance plan + Round 2 application ($25k–$50k)          | In this grant  |
+| 6     | Sustainability docs + final report; maintenance continues solo; follow-on scope priced on delivered results | In this grant  |
 
 ---
 
