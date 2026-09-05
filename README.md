@@ -218,6 +218,7 @@ Bounty payout: Base `0x8f36...0eb5` (PR #1, `n4rus/agent-bounties`). This projec
 We are applying for grants to enable 6 months of full-time development. See:
 - [`grants/PROTOCOL_LABS_GRANT.md`](grants/PROTOCOL_LABS_GRANT.md) — $12k, Rust + libp2p + IPFS tooling + permanent rebuild
 - [`grants/GITCOIN_GRANT.md`](grants/GITCOIN_GRANT.md) — $12k, public goods framing
+- [`grants/IPFS_UTILITY_GRANT.md`](grants/IPFS_UTILITY_GRANT.md) — $8k / 3 months, libp2p sync + IPFS persistence (live IPFS Utilities door)
 
 Both applications share the same repo, evidence, and roadmap. Preferred payout: **USDC on Base** or **USDT on Polygon**.
 
