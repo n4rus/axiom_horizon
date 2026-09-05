@@ -156,7 +156,7 @@ Thumbs.db
 # PRODUCTS / SANDBOX / DIST (not source code)
 # ==================================================
 /products/
-/sandbox/
+sandbox/
 /dist/
 
 # ==================================================
