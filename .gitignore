@@ -220,6 +220,14 @@ kai_phone_bundle/
 .kai_wiki_progress.json
 CONTEXT.md
 # ==================================================
+# LOCAL WORKFLOW DIRS & SCRATCH (never public)
+# ==================================================
+sandbox/
+# Root-level python sprawl is local tooling; bridge + MCP server stay public
+/*.py
+!/kai_bridge.py
+!/axiom_mcp_server.py
+# ==================================================
 # BOOK EDITING (work in progress, not part of grant)
 # ==================================================
 edit_utext.py
