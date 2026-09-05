@@ -227,6 +227,12 @@ sandbox/
 /*.py
 !/kai_bridge.py
 !/axiom_mcp_server.py
+# Pre-arXiv LaTeX + local server scratch + tool state
+mainrev*.tex
+.aider.input.history
+.kai_code_memory.*.json
+run.sh
+rest_server.log
 # ==================================================
 # BOOK EDITING (work in progress, not part of grant)
 # ==================================================
