@@ -94,28 +94,12 @@ For data-center workloads (cooling optimization, GPU kernel selection, memory pr
 |-----------------------|---------------|-------------------------------------------------------------------------------|
 | Living expenses       | 4,800         | $800/month × 6 — rent, food, utilities in São José dos Pinhais, Brazil        |
 | Medical expenses      | 1,200         | $200/month × 6 — copays and medications SUS does not fully cover             |
-| Dev machine (one-time)| 2,827         | Permanent rebuild, priced at Brazilian retail (see parts table below)         |
+| Dev machine (one-time)| 2,827         | Permanent rebuild: Z790 + i7-14700F + 64GB DDR5 + RTX 5060 Ti 16GB (BRT retail, USD @5.5; parts in Appendix A) |
 | Home power uplift     |   150         | ~$25/mo extra for compute rig on Copel Paraná residential rates              |
 | Cloud relay (tiny)    |    60         | Fly.io / Hetzner relay for libp2p peer discovery + public benchmark URL      |
 | KYC + legal           |   500         | International wire / USDT onboarding fees, MEI setup if needed               |
 | Reserve / overrun     | 2,463         | BRL price drift, health overruns, month-7 bridge                             |
 | **Total**             | **12,000**    |                                                                               |
-
-### Parts list (permanent dev machine, BRT retail Sept 2026, USD @5.5)
-
-| Part | Spec | R$ | $ |
-|---|---|---|---|
-| Board | MSI Z790 ATX (2× PCIe: compute + display) | 1,600 | 291 |
-| CPU | i7-14700F (20c, parallel builds + benches) | 2,000 | 364 |
-| RAM | DDR5 64GB 2×32 (dual-channel full speed, 2 slots free) | 4,600 | 836 |
-| GPU (compute) | RTX 5060 Ti 16GB (fuse set ≈ 15GB, fits) | 4,600 | 836 |
-| GPU (display, kept) | GTX 1660S — drives monitors, keeps 16GB free | 0 | 0 |
-| PSU | 850W | 1,000 | 182 |
-| Case | ATX | 750 | 136 |
-| Storage | Reuse existing NVMe (add from reserve if needed) | 0 | 0 |
-| **Total** | | **15,550** | **2,827** |
-
-**Why 5060 Ti 16GB and not 5070 Ti / 5080:** all three are 16GB — identical VRAM ceiling, same max model. The premium buys speed only, not capability. On R$0.75/kWh home power, overnight batch runs make speed the least valuable metric. Savings stay in reserve. The 1660S keeps displays off the compute card so the full 16GB serves inference.
 
 **Note on compensation:** $800/month for full-time work is below any international dev rate. It is a living-expenses grant, not a salary. The applicant is funding the rest of the gap from the existing bounty earnings (1.05 USDC Base) and savings. The grant removes the survival pressure so the work can be done at all.
 
@@ -207,3 +191,21 @@ The integration is not theoretical — it is in the budget, on the timeline, and
 ---
 
 *This application is being prepared in the `grants/` directory of the project repo so that the application, evidence, and code are reviewed together. The applicant is ready to respond to any review within 48 hours.*
+
+---
+
+## Appendix A. Parts list (permanent dev machine, BRT retail Sept 2026, USD @5.5)
+
+| Part | Spec | R$ | $ |
+|---|---|---|---|
+| Board | MSI Z790 ATX (2× PCIe: compute + display) | 1,600 | 291 |
+| CPU | i7-14700F (20c, parallel builds + benches) | 2,000 | 364 |
+| RAM | DDR5 64GB 2×32 (dual-channel full speed, 2 slots free) | 4,600 | 836 |
+| GPU (compute) | RTX 5060 Ti 16GB (fuse set ≈ 15GB, fits) | 4,600 | 836 |
+| GPU (display, kept) | GTX 1660S — drives monitors, keeps 16GB free | 0 | 0 |
+| PSU | 850W | 1,000 | 182 |
+| Case | ATX | 750 | 136 |
+| Storage | Reuse existing NVMe (add from reserve if needed) | 0 | 0 |
+| **Total** | | **15,550** | **2,827** |
+
+**Why 5060 Ti 16GB and not 5070 Ti / 5080:** all three are 16GB — identical VRAM ceiling, same max model. The premium buys speed only, not capability. On R$0.75/kWh home power, overnight batch runs make speed the least valuable metric. Savings stay in reserve. The 1660S keeps displays off the compute card so the full 16GB serves inference.
