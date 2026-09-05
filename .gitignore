@@ -181,6 +181,7 @@ sandbox/
 !LICENSE
 !README.md
 !MANUAL.md
+!wiki_2_done.md
 # Grants directory contents ARE allowed (subdir is not ignored)
 !grants/
 !grants/**/*.md
