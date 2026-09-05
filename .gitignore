@@ -233,6 +233,9 @@ mainrev*.tex
 .kai_code_memory.*.json
 run.sh
 rest_server.log
+launch_autoagi.sh
+kai-nightly.service
+kai-nightly.timer
 # ==================================================
 # BOOK EDITING (work in progress, not part of grant)
 # ==================================================
