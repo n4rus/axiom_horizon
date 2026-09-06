@@ -207,4 +207,6 @@ The integration is not theoretical — it is in the budget, on the timeline, and
 | Storage | Reuse existing NVMe (add from reserve if needed) | 0 | 0 |
 | **Total** | | **15,550** | **2,827** |
 
+**Why this machine:** the workload requires it — 10-model GGUF fusion plus multi-target (Android/low-end/server) optimization plus emulation cannot be scheduled on the current i3/16GB rig at any electricity price; cloud rental exceeds purchase cost within months at sustained hours.
+
 **Why 5060 Ti 16GB and not 5070 Ti / 5080:** all three are 16GB — identical VRAM ceiling, same max model. The premium buys speed only, not capability. On R$0.75/kWh home power, overnight batch runs make speed the least valuable metric. Savings stay in reserve. The 1660S keeps displays off the compute card so the full 16GB serves inference.
