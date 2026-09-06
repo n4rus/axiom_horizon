@@ -1,0 +1,50 @@
+{
+ "corpus": "enwiki-20260601 stream head, tags stripped",
+ "chunk": 256,
+ "note": "kappa = Eq.4 mean over heads then layers",
+ "S1": [
+  {
+   "model": "Qwen/Qwen2.5-0.5B",
+   "device": "cuda",
+   "D": 896,
+   "layers": 24,
+   "positions": 21774,
+   "spearman_rho": 0.13600049192392702,
+   "spearman_p": 2.1620456130720926e-90,
+   "mean_kappa": 0.0074230660538553445,
+   "mean_surprisal": 2.911101441015697,
+   "mean_entropy": 1.9518013342897942,
+   "skipped_nonfinite": 0
+  },
+  {
+   "model": "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+   "device": "cuda",
+   "D": 2048,
+   "layers": 22,
+   "positions": 23624,
+   "spearman_rho": 0.027626397989549488,
+   "spearman_p": 2.1685403389464728e-05,
+   "mean_kappa": 0.006866559128468125,
+   "mean_surprisal": 2.338031005256739,
+   "mean_entropy": 1.6407887111318873,
+   "skipped_nonfinite": 0
+  }
+ ],
+ "S2": [
+  {
+   "model": "Qwen/Qwen2.5-0.5B",
+   "device": "cuda",
+   "D": 896,
+   "lambda_llm": 6.829182270979037e-08,
+   "mean_entropy": 1.9381460025906563
+  },
+  {
+   "model": "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+   "device": "cuda",
+   "D": 2048,
+   "lambda_llm": 5.960464310669178e-08,
+   "mean_entropy": 1.6105378351428292
+  }
+ ],
+ "seconds": 271.2033202648163
+}
