@@ -232,6 +232,10 @@ sandbox/
 !/axiom_mcp_server.py
 # Pre-arXiv LaTeX + local server scratch + tool state
 mainrev*.tex
+universe_foundations.tex
+universe_foundations.pdf
+mainrev_final.pdf
+mainrev4.pdf
 .aider.input.history
 .kai_code_memory.*.json
 run.sh
