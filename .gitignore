@@ -5,24 +5,15 @@
 
 # ==================================================
 # OPencode HISTORY & CONFIG (personal working dir) — PRIVATE
+# Generic patterns only; no project-specific filenames.
 # ==================================================
 .opencode/
 opencode_history_full/
 opencode_sessions/
-opencode.kai.json
-opencode.kai.ollama.json
-opencode.json
-opencode.axiom.backup.json
-opencode.BACKUP.json
-opencode_NEW.json
-.opencode_resume.json
-.opencode.kai.json
-.opencode.kai.ollama.json
-.kai_code_bench.jsonl
-.kai_code_bench.jsonl.*
-opencode.axiom.backup.json
+opencode*.json*
+.opencode*
 api_keys
-.safety_protocols.txt
+.safety*
 opencode_secrets.json
 .env
 *.key
@@ -57,16 +48,15 @@ enwiki-*.xml
 .axiom_tree/
 .kai_backups/
 .kai_bracket.json
-.kai_chat_memory.json
-.kai_chat_memory.json.bak
-.kai_chat_memory.json.tmp
-.kai_darwin_state.json
-.kai_ingest_progress.json
-.kai_physics_bench.jsonl
-.kai_physics_bench.jsonl.*
-.kai_recall_bench.jsonl
-.kai_recall_bench.jsonl.*
-.kai_refine_ledger.jsonl
+.kai_chat_memory*
+.kai_darwin*
+.kai_ingest*
+.kai_physics_bench*
+.kai_recall_bench*
+.kai_code_bench*
+.kai_refine*
+*ledger*
+.kai_live*
 .kai_state/
 .venv/
 .eve_state/
@@ -117,27 +107,19 @@ kai/src/*.restored
 kai/src/*.tmp
 rust/kai-fusion/src/*.restored
 rust/kai-fusion/src/*.tmp
-# --- your 22 specific files (union) ---
-adjustments.txt
-agents_chat.txt
-bthink.txt
-conscious_loop_log20260406
-conscious_loop_log*
-coulombs_law_examples.txt
-dynamic_system_data.txt
-euler_agent.modelfile
-GPT_chat
+# --- local scratch files (generic patterns only) ---
+adjust*.txt
+*chat*
+bthink*
+wordlist*
+*mdlist*
+conscious_loop*
+*examples.txt
+dynamic_system*
+*.modelfile
 intent
-mdlist
-quantum_entanglement_cryptography_examples.txt
-requirements.txt
-sess_mdlist
 stdout
-synthetic_examples.txt
-wordlist.txt
-domain-prober.md
-training_examples.txt
-axiom.service
+requirements*.txt
 
 # ==================================================
 # LOCAL USER SETTINGS (never commit)
@@ -210,18 +192,17 @@ android/
 # ==================================================
 setup-dnsmasq-nginx.sh
 # ==================================================
-# SENSITIVE — NEVER COMMIT
+# SENSITIVE — NEVER COMMIT (generic patterns only)
 # ==================================================
-WIRE_KAI_OPENCODE.sh
-WIRE_KAI_OPENCODE_KEYS.txt
-setup-lituour-full.sh
-ounty_poll
-kai_phone_bundle/
-.kai_wiki_progress.json
-CONTEXT.md
+WIRE_*
+setup-*.sh
+*poll*
+*phone_bundle*/
+.kai_wiki_progress*
+CONTEXT*.md
 # Grants directory: only the live submission is public
-grants/PROTOCOL_LABS_GRANT.md
-grants/GITCOIN_GRANT.md
+grants/*.md
+!grants/IPFS_UTILITY_GRANT.md
 # ==================================================
 # LOCAL WORKFLOW DIRS & SCRATCH (never public)
 # ==================================================
@@ -230,26 +211,23 @@ sandbox/
 /*.py
 !/kai_bridge.py
 !/axiom_mcp_server.py
-# Pre-arXiv LaTeX + local server scratch + tool state
-mainrev*.tex
-universe_foundations.tex
-universe_foundations.pdf
-mainrev_final.pdf
-mainrev4.pdf
-.aider.input.history
-.kai_code_memory.*.json
-run.sh
-rest_server.log
-launch_autoagi.sh
-kai-nightly.service
-kai-nightly.timer
+# Pre-arXiv LaTeX + local server scratch + tool state (generic patterns)
+mainrev*
+universe_*
+drive_through*
+utext*
+edit_utext*
+cover.*
+start_*
+video/
+power_log*
+run*.sh
+rest_server*
+launch_*.sh
+*.service
+cloudflare-*
+.aider*
+.kai_code_memory*
 # ==================================================
-# BOOK EDITING (work in progress, not part of grant)
+# BOOK EDITING (work in progress, not part of grant; covered by utext*/edit_* above)
 # ==================================================
-edit_utext.py
-utext_clean.txt
-utext_backup.odt
-utext_edited.odt
-EDIT_CHECKLIST.md
-cloudflare-tunnel.sh
-# local infra
