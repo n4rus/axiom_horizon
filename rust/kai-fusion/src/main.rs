@@ -4514,7 +4514,7 @@ fn esp32_cmd(action: &str, params: &str) {
             }
         }
         _ => {
-            println!("ESP32 PoGIE bridge — physical integration for Kai AGI.");
+            println!("ESP32 PoGIE bridge — physical integration for Kai.");
             println!("  kai esp32 status                        # show PoGIE network node status");
             println!("  kai esp32 bridge <port> [baud]          # connect ESP32 serial bridge");
             println!("  kai esp32 energy                        # show energy grid status");

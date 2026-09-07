@@ -29,7 +29,7 @@ Axiom Horizon is the parent workspace. **Kai Fusion** (`rust/kai-fusion`) is the
 - [CLI — kai](#cli--kai)
 - [Configuration](#configuration)
 - [Weight Bootstrap & Assimilation](#weight-bootstrap--assimilation)
-- [AGI Plan — 7 Phases](#agi-plan--7-phases)
+- [Roadmap — 7 Phases](#roadmap--7-phases)
 - [Android App — Next](#android-app--next)
 - [File Map for Documentation](#file-map-for-documentation)
 - [Contributing & Self-Improvement Loop](#contributing--self-improvement-loop)
@@ -324,7 +324,7 @@ One config expresses all modes (dense ↔ MoE ↔ MLA ↔ Linear).
 
 ---
 
-## AGI Plan — 7 Phases
+## Roadmap — 7 Phases
 
 Distilled from private `AGI_PLAN.md` (public summary):
 

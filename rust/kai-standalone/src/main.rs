@@ -1,6 +1,6 @@
 //! # kai-standalone
 //!
-//! The "standalone Kai AGI" milestone: a pure-Rust binary that ingests the live
+//! The "standalone Kai" milestone: a pure-Rust binary that ingests the live
 //! Kai checkpoint and runs the autonomous learning loop (world-model forward
 //! pass, variational free-energy, attractor update, self-supervised training)
 //! entirely in Rust via `kai-core` — **no Python orchestration**.
@@ -666,7 +666,7 @@ fn main() {
     }
 
     let lr = 0.01_f32 / (1.0 + wm.wm_steps as f32 * 0.001);
-    let prime_goal = "Minimize variational free energy; become a self-improving standalone Kai AGI.";
+    let prime_goal = "Minimize variational free energy; keep improving the standalone Kai loop.";
 
     let mut prev_actual: Option<Array1<f32>> = None;
     let mut ci = 0usize; // code-curriculum index

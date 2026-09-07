@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kai_bridge.py — OpenAI-compatible HTTP API for Kai AGI inference.
+kai_bridge.py — OpenAI-compatible HTTP API for Kai inference.
 
 Calls Ollama's /api/chat directly (bypasses `kai` subprocess) so that:
   - Chat templates are applied correctly
@@ -2498,7 +2498,7 @@ class KaiBridgeHandler(BaseHTTPRequestHandler):
 # ── main ──────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Kai AGI OpenAI-compatible bridge")
+    parser = argparse.ArgumentParser(description="Kai OpenAI-compatible bridge")
     parser.add_argument("--port", type=int, default=8765, help="Port to listen on")
     args = parser.parse_args()
 

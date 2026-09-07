@@ -2,7 +2,7 @@
 name = "kai-standalone"
 version = "0.1.0"
 edition = "2021"
-description = "Standalone Kai AGI runner — ingests the live checkpoint and runs the world-model / attractor / VFE loop in pure Rust (Rust MLIR kernels)."
+description = "Standalone Kai runner — ingests the live checkpoint and runs the world-model / attractor / VFE loop in pure Rust (Rust MLIR kernels)."
 license = "MIT"
 
 [dependencies]
