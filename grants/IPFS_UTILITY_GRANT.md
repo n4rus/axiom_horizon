@@ -65,4 +65,4 @@ MIT — all work produced under this grant is contributed back to the public MIT
 
 ---
 
-*Companion to the repo's 6-month roadmap (`grants/PROTOCOL_LABS_GRANT.md`): this proposal funds the IPFS-relevant slice (sync + persistence + distributed proof) as a standalone 3-month unit. The research-grants portal program is paused, so this utility-grant path is the live door for the same work.*
+*This proposal funds the IPFS-relevant slice (sync + persistence + distributed proof) as a standalone 3-month unit. A broader unfunded 6-month roadmap exists as a local planning doc. The research-grants portal program is paused, so this utility-grant path is the live door for the work.*

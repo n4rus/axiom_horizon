@@ -219,6 +219,9 @@ ounty_poll
 kai_phone_bundle/
 .kai_wiki_progress.json
 CONTEXT.md
+# Grants directory: only the live submission is public
+grants/PROTOCOL_LABS_GRANT.md
+grants/GITCOIN_GRANT.md
 # ==================================================
 # LOCAL WORKFLOW DIRS & SCRATCH (never public)
 # ==================================================
