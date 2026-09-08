@@ -57,7 +57,7 @@ Out of scope (unfunded, on the public roadmap): MLIR upstream RFC, public API lo
 
 $800/month is living expenses, not a salary. The one-time machine cost is shared across this and all future work — it is charged once, here.
 
-Preferred payout: USDT on Binance, ETH, or bank transfer — account details provided privately upon KYC.
+Preferred payout: USDT on Binance, ETH, or bank transfer.
 
 ## 6. License
 

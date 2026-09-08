@@ -218,7 +218,7 @@ Bounty payout: Base `0x8f36...0eb5` (PR #1, `n4rus/agent-bounties`). This projec
 We are applying for grants to enable full-time development. Live proposal:
 - [`grants/IPFS_UTILITY_GRANT.md`](grants/IPFS_UTILITY_GRANT.md) — $8k / 3 months, libp2p sync + IPFS persistence
 
-One live proposal, one repo, one roadmap. Preferred payout: **USDT on Binance, ETH, or bank transfer (details on KYC)**.
+One live proposal, one repo, one roadmap. Preferred payout: **USDT on Binance, ETH, or bank transfer**.
 
 ## Project Layout```
 axiom_horizon/
