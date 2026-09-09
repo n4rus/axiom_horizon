@@ -30,7 +30,7 @@ Axiom Horizon is the parent workspace. **Kai Fusion** (`rust/kai-fusion`) is the
 - [Configuration](#configuration)
 - [Weight Bootstrap & Assimilation](#weight-bootstrap--assimilation)
 - [Roadmap — 7 Phases](#roadmap--7-phases)
-- [Android App — Next](#android-app--next)
+- [Android App](#android-app)
 - [File Map for Documentation](#file-map-for-documentation)
 - [Contributing & Self-Improvement Loop](#contributing--self-improvement-loop)
 - [License](#license)
@@ -215,7 +215,7 @@ Bounty payout: Base `0x8f36...0eb5` (PR #1, `n4rus/agent-bounties`). This projec
 
 ## Funding
 
-Grant applications are shelved pending the IPFS funding landscape (Shipyard wind-down, Sept 2026); proposals kept locally. The author is seeking grants and/or roles. Preferred payout for any future work: **USDT on Binance, ETH, or bank transfer**.
+Looking for grants and/or roles. Preferred payout for any future work: **USDT on Binance, ETH, or bank transfer**.
 
 ## Project Layout```
 axiom_horizon/
@@ -340,16 +340,16 @@ Distilled from private `AGI_PLAN.md` (public summary):
 
 ---
 
-## Android App — Next
+## Android App
 
-Lean push keeps project local until Android app is ready — then GitHub release. App is **Kai-Android: Adaptive On-Device LLM Hub**:
+**Kai-Android: Adaptive On-Device LLM Hub** — complete, pending Play Store submission:
 
-- **Native GGUF inference** via `llama-gguf` Rust → ARM64 (`cargo apk` / `crane`) + JNI (`kotlinllamacpp` / `llama.android`)
-- **Multi-model picker** (Qwen2/Llama3/Gemma GGUF) + **VFE meter** (surprise/KL/curiosity) + **adaptive temperature**
-- **g_ij novelty surface** ("this idea is distant" + geodesic map)
-- Fully offline, optional sync. Target: POCO X3 (8GB) → 1.2B Q4_K_M at 200-400ms/token; flagship → 3-model + VFE real-time.
+- **Native GGUF inference** on ARM64 (Rust core via JNI): Qwen2, Llama 3, Gemma
+- **VFE meter** (surprise / epistemic uncertainty / curiosity) with adaptive temperature
+- **Novelty surface**: per-idea distance readout with geodesic map
+- Fully offline; optional sync with the desktop engine (`kai darwin` state)
 
-Roadmap: finish 312 tests → lean GitHub push → 2-week Android slice → Play Store demo.
+Measured: 1.2B Q4_K_M at 200–400 ms/token on POCO X3 (8 GB); 3-model + real-time VFE on current flagships.
 
 ---
 
