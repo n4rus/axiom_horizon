@@ -349,7 +349,7 @@ Distilled from private `AGI_PLAN.md` (public summary):
 - **Novelty surface**: per-idea distance readout with geodesic map
 - Fully offline; optional sync with the desktop engine (`kai darwin` state)
 
-Measured: 1.2B Q4_K_M at 200–400 ms/token on POCO X3 (8 GB); 3-model + real-time VFE on current flagships.
+Measured: 1.2B Q4_K_M at 200–400 ms/token on POCO X3 (8 GB); 3-model + real-time VFE on current flagships. Also tested on Samsung A36 (8 GB / 256 GB).
 
 ---
 
