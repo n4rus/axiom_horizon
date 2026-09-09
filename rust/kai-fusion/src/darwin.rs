@@ -1367,10 +1367,14 @@ pub mod self_play {
     use super::*;
     use rand::seq::SliceRandom;
 
-    /// Configuration for the self-play training loop
+    /// Configuration for the self-play training loop.
+    /// `max_generations == 0` means indeterminate: evolve until killed.
+    /// The archive checkpoints every generation, so a kill loses at most
+    /// one generation and the next run resumes from the saved population.
     #[derive(Debug, Clone, Copy)]
     pub struct SelfPlayConfig {
         pub population_size: usize,
+        /// 0 = run forever (until killed); N = stop after N iterations.
         pub max_generations: usize,
         pub mutation_rate: f32,
         pub crossover_rate: f32,
@@ -1421,6 +1425,9 @@ pub mod self_play {
 
         /// Run the self-play training loop.
         /// Returns the best fitness score and patch found.
+        /// Generations are indeterminate like real life: with
+        /// `max_generations == 0` the loop runs until killed, checkpointing
+        /// every generation. Plateau is measured and logged, never a halt.
         pub fn run(&mut self, initial_source: &str) -> SelfPlayResult {
             let evaluator = parallel_eval::ParallelEvaluator::new(parallel_eval::EvalConfig {
                 max_workers: rayon::current_num_threads(),
@@ -1429,19 +1436,30 @@ pub mod self_play {
             });
 
             let mut fitness_history = Vec::new();
-            let mut converged_at = self.config.max_generations;
+            let mut converged_at = self.archive.generation();
             // Patience counter: how many consecutive generations failed to
             // clear the delta-gen gate. Convergence is NOT an absolute fitness
             // ceiling (every candidate passes the current suite, so `>= thr`
             // fires at generation 0 and the gate never binds) — it is plateau
-            // detection: stop when nothing has strictly improved for N gens.
+            // detection: noticed and logged, never a halt (see below).
             let mut no_improve_streak = 0usize;
             const CONVERGE_PATIENCE: usize = 5;
 
-            // Seed initial population from the base source
-            self.seed_population(initial_source);
+            // Resume, not restart: an archive that already holds candidates
+            // continues evolving them from the saved generation. Only a
+            // fresh archive gets seeded.
+            if self.archive.candidates().is_empty() {
+                self.seed_population(initial_source);
+            }
 
-            for generation in 0..self.config.max_generations {
+            let mut best_seen = f32::NEG_INFINITY;
+            let mut best_seen_gen = self.archive.generation();
+            let mut generation = 0usize;
+            loop {
+                // Bounded runs stop after N iterations; 0 = indeterminate.
+                if self.config.max_generations > 0 && generation >= self.config.max_generations {
+                    break;
+                }
                 // Evaluate all candidates in parallel
                 let results = evaluator.evaluate_all(self.archive.candidates());
 
@@ -1468,6 +1486,10 @@ pub mod self_play {
 
                 let best_fitness = self.archive.candidates.first().map(|c| c.fitness).unwrap_or(0.0);
                 fitness_history.push(best_fitness);
+                if best_fitness > best_seen {
+                    best_seen = best_fitness;
+                    best_seen_gen = self.archive.generation();
+                }
 
                 // Safety-gated champion election (LAYER 3b wired into
                 // self-play): promote the best candidate only if it strictly
@@ -1485,20 +1507,31 @@ pub mod self_play {
                 let delta = champion_fitness as f64 - self.archive.last_gen_fitness();
                 self.archive.adapt_mutation_rate(delta);
 
-                // Patience-based convergence: strict improvement resets the
-                // streak; CONVERGE_PATIENCE plateaus in a row stop the run.
+                // Patience-based plateau notice: strict improvement resets the
+                // streak; CONVERGE_PATIENCE stagnant generations in a row log
+                // a notice and the run CONTINUES — plateau is measured, never
+                // a halt. Mutation-rate adaptation already widens search on
+                // plateau, so the system kicks itself.
                 if promoted.is_some() {
                     no_improve_streak = 0;
                 } else {
                     no_improve_streak += 1;
                 }
-                if no_improve_streak >= CONVERGE_PATIENCE {
-                    converged_at = generation;
-                    break;
+                if no_improve_streak == CONVERGE_PATIENCE {
+                    converged_at = self.archive.generation();
+                    eprintln!("darwin: plateau ({} stagnant gens) at arch_gen={} best={:.4} — continuing",
+                        CONVERGE_PATIENCE, converged_at, champion_fitness);
                 }
+
+                // Checkpoint every generation: a kill loses at most one gen,
+                // and the next invocation resumes from the saved population.
+                self.archive.save();
+                eprintln!("darwin: iter={} arch_gen={} best={:.4} streak={}",
+                    generation, self.archive.generation(), champion_fitness, no_improve_streak);
 
                 // Generate next generation
                 self.next_generation();
+                generation += 1;
             }
 
             // Persist the evolved state (candidates, generation, fitness gate,
@@ -1509,7 +1542,7 @@ pub mod self_play {
             let best = self.archive.candidates.first().cloned();
             SelfPlayResult {
                 best_fitness: best.as_ref().map(|c| c.fitness).unwrap_or(0.0),
-                best_generation: if fitness_history.is_empty() { 0 } else { fitness_history.len() - 1 },
+                best_generation: best_seen_gen,
                 final_population_size: self.archive.candidates.len(),
                 convergence_generations: converged_at,
                 fitness_history,

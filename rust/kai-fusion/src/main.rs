@@ -3391,7 +3391,23 @@ fn darwin_cmd(action: &str, params: &str) {
         },
         "self-play" => {
             let parts: Vec<&str> = params.split_whitespace().collect();
-            let initial_source = if parts.is_empty() {
+            // --generations N (or --gens N): bound the run to N iterations.
+            // 0 (default) = indeterminate: evolve until killed. The archive
+            // checkpoints every generation, so Ctrl+C loses at most one gen
+            // and the next run resumes from the saved population.
+            let mut max_gens = 0usize;
+            let mut src_parts: Vec<&str> = Vec::new();
+            let mut i = 0;
+            while i < parts.len() {
+                if (parts[i] == "--generations" || parts[i] == "--gens") && i + 1 < parts.len() {
+                    max_gens = parts[i + 1].parse().unwrap_or(0);
+                    i += 2;
+                } else {
+                    src_parts.push(parts[i]);
+                    i += 1;
+                }
+            }
+            let initial_source = if src_parts.is_empty() {
                 // Default: read source files
                 let src_dirs = ["src", "rust/kai-fusion/src"];
                 let mut content = String::new();
@@ -3410,11 +3426,11 @@ fn darwin_cmd(action: &str, params: &str) {
                 }
                 content
             } else {
-                parts.join(" ")
+                src_parts.join(" ")
             };
             let config = darwin::self_play::SelfPlayConfig {
                 population_size: 10,
-                max_generations: 20,
+                max_generations: max_gens,
                 mutation_rate: 0.15,
                 crossover_rate: 0.3,
                 fitness_threshold: 0.8,
@@ -3424,8 +3440,9 @@ fn darwin_cmd(action: &str, params: &str) {
             let mut trainer = darwin::self_play::SelfPlayTrainer::new(
                 ".axiom_state/darwin_archive.json", config,
             );
-            println!("Self-play training: pop={}, gens={}, starting...",
-                config.population_size, config.max_generations);
+            let gens_label = if max_gens == 0 { "∞".to_string() } else { max_gens.to_string() };
+            println!("Self-play training: pop={}, gens={} (0=indeterminate), starting...",
+                config.population_size, gens_label);
             let result = trainer.run(&initial_source);
             println!("Self-play complete:");
             println!("  best_fitness: {:.4}", result.best_fitness);
