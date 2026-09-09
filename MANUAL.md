@@ -22,7 +22,7 @@ It is not a chatbot wrapper. It is a **new model**:
 - It **self-improves** with `kai darwin evolve` — real source patches + physics-parameter evolution, not just prompt tweaks.
 - It is **local-first** — every tool call resolves to `127.0.0.1:11434` and local shards before any remote fallback.
 
-If `AGI_PLAN.md` is the 7-phase roadmap and `Kai_FUSION_ARCHITECTURE.md` is the Phase C blueprint, **this manual is the sequential execution guide**: install → build → configure → run → evolve → ship to Android → document.
+If the internal 7-phase roadmap (local-only planning docs) sets direction and `Kai_FUSION_ARCHITECTURE.md` is the Phase C blueprint, **this manual is the sequential execution guide**: install → build → configure → run → evolve → ship to Android → document.
 
 ---
 
@@ -41,7 +41,7 @@ If `AGI_PLAN.md` is the 7-phase roadmap and `Kai_FUSION_ARCHITECTURE.md` is the 
 11. [Configuration Reference](#11-configuration-reference)
 12. [CLI Reference — kai](#12-cli-reference--kai)
 13. [Usage Walkthrough — End to End](#13-usage-walkthrough--end-to-end)
-14. [AGI Plan — 7 Phases in Sequence](#14-agi-plan--7-phases-in-sequence)
+14. [Roadmap — 7 Phases in Sequence](#14-roadmap--7-phases-in-sequence)
 15. [Android Companion — Kai-Android](#15-android-companion--kai-android)
 16. [Actuator / API Layer — Integration Contract](#16-actuator--api-layer--integration-contract)
 17. [Troubleshooting & FAQ](#17-troubleshooting--faq)
@@ -597,7 +597,7 @@ kai run --prompt "analogy between transformer and universe" --physics-wired
 
 ---
 
-## 14. AGI Plan — 7 Phases in Sequence
+## 14. Roadmap — 7 Phases in Sequence
 
 | Phase | Weeks | Goal | Key Tasks |
 |---|---|---|---|
@@ -605,7 +605,7 @@ kai run --prompt "analogy between transformer and universe" --physics-wired
 | **1 Perception & Memory** | 1-2 | Vector memory, g_ij, bracket as state vector | nomic-embed-text → SQLite, `g_ij=1-a_ij`, `phi=tau*age/E` |
 | **2 Self-Improvement Engine** | 3-4 | Genetic ops, fitness, parallel pool, self-play | AST mutate, fitness formula, multiprocessing Pool, synthetic curriculum |
 | **3 World Interaction** | 5-6 | ESP32-S3, headless browser, sandbox, FS agent | serial PoGIE, Playwright, Docker, read_tree/find_file |
-| **4 Meta-Cognition** | 7-8 | Self-awareness, goal decomposition, uncertainty, value learning | plateau detector, recursive decomposition, variance sampling, RLHF-local |
+| **4 Meta-Cognition** | 7-8 | Self-monitoring, goal decomposition, uncertainty, value learning | plateau detector, recursive decomposition, variance sampling, RLHF-local |
 | **5 Recursive Self-Improvement** | 9-12 | Meta-learn improver, distributed, ingestion, self-mod | rewrite sandbox, CPU cluster, Wikipedia 6M chunks, levels 0..N |
 | **6 Integration & Deployment** | 13-16 | systemd 24/7, multimodal, multi-agent, alignment | service, llava/whisper, shared memory, watchdog invariants |
 | **7 Measured Convergence** | 17+ | tau accounting, fitness fixed-point, actuator/API | `tau=useful_work/wall_time`, `lim fitness→0`, ingress/egress local-first |
@@ -632,7 +632,7 @@ Lean push stays local until Android app is ready — then public release. Compan
 
 ## 16. Actuator / API Layer — Integration Contract
 
-AGI without actuators cannot affect the world. Layer spec (Phase 7.3):
+A system without actuators cannot affect the world. Layer spec (Phase 7.3):
 
 - **Ingress:** typed, sandboxed tool/API calls *into* Kai (browser, FS agent, sandbox eval, MCP servers).
 - **Egress:** authenticated, model-invokable resources (shell, files, network, MCP endpoints).
@@ -662,8 +662,8 @@ A: Do not claim done. Read failure, hypothesis, patch, `cargo test` again. If `p
 **Q: Push rejected (1GB limit)?**  
 A: You tried to push heavy files. Ensure `.gitignore` is the lean one (25GB enwiki, 15GB llvm, 778MB sources are ignored). `git ls-files --others --exclude-standard` should be ~`README.md`+`LICENSE`+`rust/` only before `git add .`.
 
-**Q: Why are `AGI_PLAN.md` etc ignored?**  
-A: Union `.gitignore` hides all `*.md` except `LICENSE`/`README.md`/`MANUAL.md` per your request to keep docs private until Android is ready. This manual distills them for public use.
+**Q: Why are most `.md` files ignored?**
+A: The lean `.gitignore` keeps session notes and research docs local; only `README.md`, `MANUAL.md`, `wiki_2_done.md`, and `grants/` are public. This manual distills the local docs for public use.
 
 **Q: How to add docs later?**  
 A: Edit `MANUAL.md` and expand `docs/` per File Map in README § File Map. Each `docs/*.md` is a chapter that deep-dives one `rust/` module. Add `!docs/*.md` to `.gitignore` when ready.
