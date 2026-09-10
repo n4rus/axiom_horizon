@@ -200,9 +200,10 @@ setup-*.sh
 *phone_bundle*/
 .kai_wiki_progress*
 CONTEXT*.md
-# Grants directory: only the live submission is public
+# Grants applications shelved locally pending funding landscape (Sept 2026)
 grants/*.md
-!grants/IPFS_UTILITY_GRANT.md
+!grants/cmc-hackathon/
+!grants/cmc-hackathon/*.md
 # ==================================================
 # LOCAL WORKFLOW DIRS & SCRATCH (never public)
 # ==================================================
