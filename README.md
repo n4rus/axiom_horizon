@@ -1,6 +1,6 @@
 # Axiom Horizon — Kai Fusion
 
-> **Autonomous Darwinian optimization engine for compute — Rust, MIT, 312 tests GREEN, self-improves without cloud LLM APIs. Applied for Protocol Labs + Gitcoin grants.**
+> **Autonomous Darwinian optimization engine for compute — Rust, MIT, 312 tests GREEN, self-improves without cloud LLM APIs.**
 
 
 
