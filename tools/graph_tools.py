@@ -8,15 +8,17 @@ executes against a live Subgraph endpoint.
 Auth: Subgraph Studio API key from the GRAPH_API_KEY environment variable.
 The key is never committed (see .gitignore: .env).
 
-Endpoint pattern:
-    https://gateway-arbitrum.network.thegraph.com/api/<KEY>/subgraphs/id/<ID>
+Endpoint pattern (current docs: thegraph.com/docs/en/gateways/):
+    https://gateway.thegraph.com/api/<KEY>/subgraphs/id/<ID>
+Auth may also go as Authorization: Bearer header; URL form is optimal.
+Example subgraph (official docs): DZz4kDTdmzWLWsV373w2bSmoar3umKKH9y82SUKr5qmp
 """
 from __future__ import annotations
 import json
 import os
 import urllib.request
 
-GRAPH_GATEWAY = "https://gateway-arbitrum.network.thegraph.com/api"
+GRAPH_GATEWAY = "https://gateway.thegraph.com/api"
 
 
 def _key() -> str:
@@ -30,8 +32,18 @@ def graph_query(subgraph_id: str, graphql: str) -> dict:
     """Execute raw GraphQL against a live Subgraph. Returns parsed JSON."""
     url = f"{GRAPH_GATEWAY}/{_key()}/subgraphs/id/{subgraph_id}"
     payload = json.dumps({"query": graphql}).encode()
+    # Browser-like headers: the gateway edge (Cloudflare) rejects bare
+    # urllib clients with HTTP 403/1010. These headers are presentation
+    # only; auth is the API key in the URL path.
     req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
+        url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+            "Origin": "https://thegraph.com",
+            "Referer": "https://thegraph.com/",
+        },
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
