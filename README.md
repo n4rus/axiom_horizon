@@ -215,7 +215,7 @@ Bounty payout: Base `0x8f36...0eb5` (PR #1, `n4rus/agent-bounties`). This projec
 
 ## Funding
 
-Available for remote Rust/backend roles (Brazil, remote-first). Grant proposals kept locally while job hunting; this repo is the proof of work.
+Available for remote Rust/backend roles (Brazil, remote-first). This repo is the proof of work.
 
 ## Project Layout```
 axiom_horizon/
