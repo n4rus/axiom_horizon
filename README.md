@@ -215,7 +215,7 @@ Bounty payout: Base `0x8f36...0eb5` (PR #1, `n4rus/agent-bounties`). This projec
 
 ## Funding
 
-Looking for grants and/or roles. Live build: [`grants/cmc-hackathon/CMC_PLAN.md`](grants/cmc-hackathon/CMC_PLAN.md) — CMC API hackathon, live market data behind the Axiom MCP. Preferred payout for any future work: **USDT on Binance, ETH, or bank transfer**.
+Available for remote Rust/backend roles (Brazil, remote-first). Grant proposals kept locally while job hunting; this repo is the proof of work.
 
 ## Project Layout```
 axiom_horizon/
