@@ -139,6 +139,8 @@ Thumbs.db
 /products/
 sandbox/
 /dist/
+desktop/src-tauri/gen/
+desktop/src-tauri/target/
 
 # ==================================================
 # ML MODELS / WEIGHTS / HEAVY ARCHIVES

@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capabilities: window + core events only. No shell, no fsScope, no network beyond the app itself.","local":true,"windows":["main"],"permissions":["core:default","core:window:default"]}}
