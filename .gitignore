@@ -210,6 +210,8 @@ sandbox/
 /*.py
 !/kai_bridge.py
 !/axiom_mcp_server.py
+!/axiom_alien.py
+!/axiom_train.py
 # Pre-arXiv LaTeX + local server scratch + tool state (generic patterns)
 mainrev*
 universe_*

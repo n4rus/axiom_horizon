@@ -25,6 +25,7 @@ Axiom Horizon is the parent workspace. **Kai Fusion** (`rust/kai-fusion`) is the
 - [Strengths — Scalability, Efficiency, Optimization & Info Relay](#strengths--scalability-efficiency-optimization--info-relay)
 - [Project Layout](#project-layout)
 - [Quick Start](#quick-start)
+- [Product — Axiom Local (v1.0)](#product--axiom-local-v10)
 - [Build & Verify](#build--verify)
 - [CLI — kai](#cli--kai)
 - [Configuration](#configuration)
@@ -261,6 +262,36 @@ cargo run -p kai-fusion -- launch opencode
 ```
 
 On first launch: loads `KaiFusionConfig` default (dense RoPE-MHA) + GGUF for Qwen2.5/Llama3 + VFE wrapper + REPL. MoE/MLA/vision/linear are feature-gated behind same config.
+
+---
+
+## Product — Axiom Local (v1.0)
+
+Local-first AI agent stack: no cloud API, no subscription, no data leaves the machine. Three parts, one install.
+
+**Prerequisites:** Python 3.11+, [Ollama](https://ollama.com) running locally with any chat model (`ollama pull qwen2.5:7b`), Linux or macOS.
+
+```bash
+git clone https://github.com/n4rus/axiom_horizon.git
+cd axiom_horizon
+pip install ollama           # only third-party dependency
+python3 axiom_mcp_server.py  # stdio MCP server (also serves :8000/v1)
+```
+
+**Use it from any agent client** (Claude Desktop, Cursor, Cline, opencode) — add to MCP config:
+
+```json
+{ "mcpServers": { "axiom": {
+  "command": "python3",
+  "args": ["/path/to/axiom_horizon/axiom_mcp_server.py"]
+} } }
+```
+
+**Verify:** 7 tools appear (`axiom_chat`, `axiom_status`, `axiom_identity`, `axiom_evolve`, `axiom_kb_search`, `axiom_wiki`, `axiom_reset`). Ask `axiom_status` — a JSON attractor/VFE snapshot answers if the stack is healthy.
+
+**Also included:** `kai_bridge.py` (OpenAI-compatible API on `:8765` — point any client at it), `tools/graph_tools.py` (live chain data; needs free `GRAPH_API_KEY`), Rust engine (`rust/`, 312 tests green).
+
+**Compute-gated roadmap** (needs funded hardware, tracked in repo issues): 12b-tier default teachers, overnight darwin service, hosted relay. Everything above runs today on commodity hardware.
 
 ---
 
