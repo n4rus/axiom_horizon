@@ -212,6 +212,8 @@ sandbox/
 !/axiom_mcp_server.py
 !/axiom_alien.py
 !/axiom_train.py
+# Unsuccessful bounty tooling stays local
+bug_bounty/huntr/
 # Pre-arXiv LaTeX + local server scratch + tool state (generic patterns)
 mainrev*
 universe_*
