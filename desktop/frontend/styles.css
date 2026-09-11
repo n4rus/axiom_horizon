@@ -1,5 +1,7 @@
 :root { color-scheme: dark; }
-body { font-family: system-ui, sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; background: #0b1020; color: #e6e6e6; }
+body { font-family: system-ui, sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; background: #0b1020 url("assets/background.jpg") no-repeat center top fixed; background-size: cover; color: #e6e6e6; }
+header { display: flex; align-items: center; gap: 16px; }
+.logo { width: 72px; height: 72px; border-radius: 16px; }
 header h1 { color: #76b900; margin-bottom: 0; }
 .ver { font-size: 0.5em; color: #888; }
 .sub { color: #999; margin-top: 4px; }
