@@ -1,0 +1,17 @@
+:root { color-scheme: dark; }
+body { font-family: system-ui, sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; background: #0b1020; color: #e6e6e6; }
+header h1 { color: #76b900; margin-bottom: 0; }
+.ver { font-size: 0.5em; color: #888; }
+.sub { color: #999; margin-top: 4px; }
+section { background: #141a2e; border: 1px solid #2a3556; border-radius: 12px; padding: 16px 20px; margin: 16px 0; }
+h2 { color: #88ccff; margin-top: 0; font-size: 1.1em; }
+.cards { display: flex; gap: 12px; flex-wrap: wrap; }
+.card { flex: 1; min-width: 180px; background: #0b1020; border-radius: 8px; padding: 10px 14px; }
+.card b.on { color: #76ff90; }
+.card b.off { color: #ff8080; }
+.small { color: #888; font-size: 0.85em; margin-top: 6px; word-break: break-all; }
+.row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+button, select, input { background: #0b1020; color: #e6e6e6; border: 1px solid #2a3556; border-radius: 6px; padding: 8px 12px; }
+button { background: #76b900; color: #0b1020; font-weight: bold; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: wait; }
+pre#out { background: #0b1020; border-radius: 8px; padding: 12px; white-space: pre-wrap; min-height: 120px; max-height: 420px; overflow-y: auto; }

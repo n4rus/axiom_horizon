@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Axiom Local</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Axiom Local <span class="ver">v0.1</span></h1>
+  <p class="sub">Private AI computer. No cloud. No subscription. No data leaves.</p>
+</header>
+
+<section id="status">
+  <h2>Status</h2>
+  <div class="cards">
+    <div class="card">Ollama <b id="st-ollama">…</b><div class="small" id="st-models"></div></div>
+    <div class="card">MCP :8000 <b id="st-mcp">…</b></div>
+    <div class="card">Bridge :8765 <b id="st-bridge">…</b></div>
+  </div>
+  <div class="row">
+    <button id="btn-mcp">Start MCP</button>
+    <button id="btn-bridge">Start Bridge</button>
+    <button id="btn-refresh">Refresh</button>
+  </div>
+  <div class="small" id="repo"></div>
+</section>
+
+<section id="chat">
+  <h2>Chat</h2>
+  <div class="row">
+    <select id="model"></select>
+    <input id="prompt" type="text" placeholder="Ask your local models…" size="60">
+    <button id="btn-send">Send</button>
+  </div>
+  <pre id="out"></pre>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
