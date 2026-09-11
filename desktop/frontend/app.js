@@ -57,13 +57,24 @@ async function send() {
   const prompt = el("prompt").value.trim();
   if (!model || !prompt) return;
   el("btn-send").disabled = true;
-  el("out").textContent = "thinking (local)…";
+  el("out").textContent = "";
+  const { listen } = window.__TAURI__.event;
+  const unlistenToken = await listen("chat-token", (e) => {
+    el("out").textContent += e.payload;
+    el("out").scrollTop = el("out").scrollHeight;
+  });
+  const unlistenDone = await listen("chat-done", (e) => {
+    if (e.payload) el("out").textContent += "\n[error: " + e.payload + "]";
+    el("btn-send").disabled = false;
+    unlistenToken();
+    unlistenDone();
+  });
   try {
-    el("out").textContent = await invoke("chat", { model, prompt });
+    await invoke("chat_stream", { model, prompt });
   } catch (e) {
     el("out").textContent = "error: " + e;
+    el("btn-send").disabled = false;
   }
-  el("btn-send").disabled = false;
 }
 el("btn-send").addEventListener("click", send);
 el("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });

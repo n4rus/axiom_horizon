@@ -7,10 +7,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Emitter, State, Window};
 
 struct Procs(Mutex<HashMap<String, Child>>);
 
@@ -122,8 +123,7 @@ fn stop_bridge(procs: State<Procs>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn chat(model: String, prompt: String) -> Result<String, String> {
-    let agent: ureq::Agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(300)).build();
+fn chat(model: String, prompt: String) -> Result<String, String> {    let agent: ureq::Agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(300)).build();
     let resp = agent
         .post("http://127.0.0.1:11434/api/generate")
         .send_json(serde_json::json!({"model": model, "prompt": prompt, "stream": false}))
@@ -135,6 +135,46 @@ fn chat(model: String, prompt: String) -> Result<String, String> {
         .ok_or_else(|| "no response field".to_string())
 }
 
+/// Streaming chat (Android parity): NDJSON tokens forwarded as
+/// `chat-token` window events, closed with `chat-done`. Spawns a thread
+/// so the UI stays responsive; mirrors StreamingGenerate pacing.
+#[tauri::command]
+fn chat_stream(window: Window, model: String, prompt: String) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let agent: ureq::Agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(300))
+            .build();
+        let body = serde_json::json!({"model": model, "prompt": prompt, "stream": true});
+        let done = (|| -> Result<(), String> {
+            let resp = agent
+                .post("http://127.0.0.1:11434/api/generate")
+                .send_json(body)
+                .map_err(|e| format!("ollama: {e}"))?;
+            let reader = std::io::BufReader::new(resp.into_reader());
+            for line in reader.lines().map_while(Result::ok) {
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    continue;
+                }
+                let v: serde_json::Value =
+                    serde_json::from_str(&line).map_err(|e| e.to_string())?;
+                if v.get("done").and_then(|d| d.as_bool()).unwrap_or(false) {
+                    break;
+                }
+                if let Some(tok) = v.get("response").and_then(|r| r.as_str()) {
+                    let _ = window.emit("chat-token", tok.to_string());
+                }
+            }
+            Ok(())
+        })();
+        let _ = window.emit(
+            "chat-done",
+            done.err().unwrap_or_default(),
+        );
+    });
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Procs(Mutex::new(HashMap::new())))
@@ -144,7 +184,8 @@ fn main() {
             stop_mcp,
             start_bridge,
             stop_bridge,
-            chat
+            chat,
+            chat_stream
         ])
         .run(tauri::generate_context!())
         .expect("axiom-local failed to start");
