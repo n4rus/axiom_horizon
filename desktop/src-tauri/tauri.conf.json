@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Axiom Local",
+  "productName": "Kai",
   "version": "0.1.0",
   "identifier": "tree.axiom.local",
   "build": {
@@ -9,7 +9,7 @@
   "app": {
     "withGlobalTauri": true,    "windows": [
       {
-        "title": "Axiom Local",
+        "title": "Kai",
         "width": 1100,
         "height": 750
       }
@@ -25,6 +25,6 @@
     "resources": ["../../axiom_mcp_server.py", "../../kai_bridge.py", "../../axiom_alien.py"],
     "category": "DeveloperTool",
     "shortDescription": "Private local-first AI agent stack",
-    "longDescription": "Axiom Local runs the Kai engine, MCP server and Ollama models entirely on your machine. No cloud API, no subscription, no data leaves."
+    "longDescription": "Kai runs its engine, MCP server and Ollama models entirely on your machine. No cloud API, no subscription, no data leaves."
   }
 }

@@ -1,4 +1,4 @@
-/* Axiom Local v0.1 frontend — vanilla JS, no build step. */
+/* Kai v0.1 frontend — vanilla JS, no build step. */
 const { invoke } = window.__TAURI__.core;
 
 const el = (id) => document.getElementById(id);
@@ -16,7 +16,7 @@ const I18N = {
     status: "Status", refresh: "Refresh", chat: "Chat", send: "Send",
     history: "History", reload: "Reload", settings: "Settings", about: "About",
     theme: "Background", theme_black: "Black", theme_white: "White",
-    language: "Language", about_text: "Axiom Local runs the Kai engine, MCP server and Ollama models entirely on your machine.",
+    language: "Language", about_text: "Kai runs its engine, MCP server and Ollama models entirely on your machine.",
     no_models: "no models — run: ollama pull qwen2.5:7b",
     ask_placeholder: "Ask your local models…", thinking: "thinking (kai)…",
     no_history: "No history yet — chat first, then reload.",
@@ -28,7 +28,7 @@ const I18N = {
     status: "Estado", refresh: "Atualizar", chat: "Conversa", send: "Enviar",
     history: "Histórico", reload: "Recarregar", settings: "Ajustes", about: "Sobre",
     theme: "Fundo", theme_black: "Preto", theme_white: "Branco",
-    language: "Idioma", about_text: "O Axiom Local roda o motor Kai, o servidor MCP e os modelos Ollama inteiramente na sua máquina.",
+    language: "Idioma", about_text: "O Kai roda seu motor, o servidor MCP e os modelos Ollama inteiramente na sua máquina.",
     no_models: "sem modelos — execute: ollama pull qwen2.5:7b",
     ask_placeholder: "Pergunte aos seus modelos locais…", thinking: "pensando (kai)…",
     no_history: "Sem histórico ainda — converse primeiro, depois recarregue.",

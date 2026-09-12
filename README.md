@@ -25,7 +25,7 @@ Axiom Horizon is the parent workspace. **Kai Fusion** (`rust/kai-fusion`) is the
 - [Strengths — Scalability, Efficiency, Optimization & Info Relay](#strengths--scalability-efficiency-optimization--info-relay)
 - [Project Layout](#project-layout)
 - [Quick Start](#quick-start)
-- [Product — Axiom Local (v1.0)](#product--axiom-local-v10)
+- [Product — Kai (v1.0)](#product--kai-v10)
 - [Build & Verify](#build--verify)
 - [CLI — kai](#cli--kai)
 - [Configuration](#configuration)
@@ -265,7 +265,7 @@ On first launch: loads `KaiFusionConfig` default (dense RoPE-MHA) + GGUF for Qwe
 
 ---
 
-## Product — Axiom Local (v1.0)
+## Product — Kai (v1.0)
 
 Local-first AI agent stack: no cloud API, no subscription, no data leaves the machine. Three parts, one install.
 

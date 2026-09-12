@@ -1,4 +1,4 @@
-//! Axiom Local v0.1 — Tauri shell around the local-first AI stack.
+//! Kai v0.1 — Tauri shell around the local-first AI stack.
 //!
 //! Manages Ollama-backed chat plus the two Python services shipped in the
 //! repo root (`axiom_mcp_server.py` on :8000, `kai_bridge.py` on :8765).
