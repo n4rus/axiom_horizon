@@ -180,12 +180,13 @@ fn kai_ask(model: &str, prompt: &str) -> Result<String, String> {
 }
 
 /// Ensure the MCP service is up (start it if needed), then return.
+/// Cold boot loads models (~3 min measured) — waits up to 6 minutes.
 fn ensure_mcp(app: &tauri::AppHandle, procs: State<Procs>) -> Result<(), String> {
     if mcp_alive() {
         return Ok(());
     }
     spawn(app, "mcp", "axiom_mcp_server.py", procs)?;
-    for _ in 0..60 {
+    for _ in 0..720 {
         std::thread::sleep(std::time::Duration::from_millis(500));
         if mcp_alive() {
             return Ok(());
