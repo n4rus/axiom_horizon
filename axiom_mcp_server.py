@@ -78,6 +78,30 @@ def _start_http():
                         'created': int(Path(__file__).stat().st_mtime), 'owned_by': 'axiom',
                     }]
                 })
+            elif self.path == '/v1/history':
+                # Sequential conversation history from the machine's own
+                # memory DB (user/agent turns as stored by ask()). Skips
+                # internal rows (SELF facts, self-play). Stored content is
+                # truncated at write time (~530 chars); full text lives only
+                # in the live session.
+                try:
+                    import sqlite3
+                    from pathlib import Path as _P
+                    db = _P(__file__).parent / '.axiom_state' / 'memory.db'
+                    con = sqlite3.connect(str(db))
+                    rows = con.execute(
+                        'SELECT ts, role, content, turn FROM memory '
+                        "WHERE role IN ('user','agent') "
+                        "AND content NOT LIKE 'SELF:%' "
+                        'ORDER BY id ASC LIMIT 2000'
+                    ).fetchall()
+                    con.close()
+                    self._json({'messages': [
+                        {'ts': r[0], 'role': r[1], 'content': r[2], 'turn': r[3]}
+                        for r in rows
+                    ]})
+                except Exception as e:
+                    self._json({'error': {'message': str(e)}}, 500)
             else:
                 self._error(404, 'not found')
 

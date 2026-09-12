@@ -17,3 +17,29 @@ button, select, input { background: #0b1020; color: #e6e6e6; border: 1px solid #
 button { background: #76b900; color: #0b1020; font-weight: bold; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: wait; }
 pre#out { background: #0b1020; border-radius: 8px; padding: 12px; white-space: pre-wrap; min-height: 120px; max-height: 420px; overflow-y: auto; }
+
+/* menu drawer */
+#btn-menu { font-size: 1.2em; }
+#drawer { display: flex; gap: 8px; }
+#drawer.hidden { display: none; }
+.hidden { display: none !important; }
+
+/* sequential messages + metadata footers (like the harness shows) */
+.msg { margin: 10px 0; max-width: 100%; }
+.msg-body { background: #0b1020; border: 1px solid #2a3556; border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; }
+.msg.user .msg-body { border-color: #76b900; }
+.msg-meta { color: #888; font-size: 0.8em; margin-top: 4px; }
+.sess { display: block; margin: 6px 0; }
+#messages h3 { color: #88ccff; }
+label { color: #aaa; margin-right: 8px; }
+
+/* light theme */
+body[data-theme="white"] { background: #f4f4f4; color: #1a1a1a; }
+body[data-theme="white"] section { background: #ffffff; border-color: #ccc; }
+body[data-theme="white"] h2, body[data-theme="white"] #messages h3 { color: #005a9e; }
+body[data-theme="white"] header h1 { color: #2e7d00; }
+body[data-theme="white"] .msg-body { background: #fff; border-color: #ccc; }
+body[data-theme="white"] .msg.user .msg-body { border-color: #2e7d00; }
+body[data-theme="white"] button, body[data-theme="white"] select, body[data-theme="white"] input { background: #fff; color: #1a1a1a; border-color: #ccc; }
+body[data-theme="white"] button { background: #76b900; color: #0b1020; }
+body[data-theme="white"] .msg-meta, body[data-theme="white"] .small, body[data-theme="white"] .sub { color: #555; }

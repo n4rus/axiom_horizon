@@ -7,7 +7,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -151,48 +150,87 @@ fn stop_bridge(procs: State<Procs>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn chat(model: String, prompt: String) -> Result<String, String> {    let agent: ureq::Agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(300)).build();
-    let resp = agent
-        .post("http://127.0.0.1:11434/api/generate")
-        .send_json(serde_json::json!({"model": model, "prompt": prompt, "stream": false}))
-        .map_err(|e| format!("ollama: {e}"))?;
-    let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
-    v.get("response")
-        .and_then(|r| r.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| "no response field".to_string())
+fn chat(model: String, prompt: String, app: tauri::AppHandle, procs: State<Procs>) -> Result<String, String> {
+    ensure_mcp(&app, procs)?;
+    kai_ask(&model, &prompt)
 }
 
-/// Streaming chat (Android parity): NDJSON tokens forwarded as
-/// `chat-token` window events, closed with `chat-done`. Spawns a thread
-/// so the UI stays responsive; mirrors StreamingGenerate pacing.
+/// Real Kai pipeline (no preprogrammed answers): the MCP HTTP endpoint runs
+/// AxiomAlien.ask with memory, attractor, VFE and persistent sessions.
+/// Desktop never talks to raw Ollama for chat — only through this.
+fn kai_ask(model: &str, prompt: &str) -> Result<String, String> {
+    let agent: ureq::Agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
+    let resp = agent
+        .post("http://127.0.0.1:8000/v1/chat/completions")
+        .send_json(serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }))
+        .map_err(|e| format!("kai mcp: {e}"))?;
+    let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+    if let Some(err) = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        return Err(format!("kai mcp: {err}"));
+    }
+    v.pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "kai mcp: empty reply".to_string())
+}
+
+/// Ensure the MCP service is up (start it if needed), then return.
+fn ensure_mcp(app: &tauri::AppHandle, procs: State<Procs>) -> Result<(), String> {
+    if mcp_alive() {
+        return Ok(());
+    }
+    spawn(app, "mcp", "axiom_mcp_server.py", procs)?;
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if mcp_alive() {
+            return Ok(());
+        }
+    }
+    Err("kai mcp did not come up (check python3 + ollama)".into())
+}
+
+fn mcp_alive() -> bool {
+    let agent: ureq::Agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(2))
+        .build();
+    agent
+        .get("http://127.0.0.1:8000/v1/models")
+        .call()
+        .map(|r| r.status() == 200)
+        .unwrap_or(false)
+}
+
+/// Conversation history from the machine's own memory DB (via MCP).
+/// Returns raw rows; the frontend groups them into date sessions.
 #[tauri::command]
-fn chat_stream(window: Window, model: String, prompt: String) -> Result<(), String> {
+fn history(app: tauri::AppHandle, procs: State<Procs>) -> Result<serde_json::Value, String> {
+    ensure_mcp(&app, procs)?;
+    let agent: ureq::Agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    let resp = agent
+        .get("http://127.0.0.1:8000/v1/history")
+        .call()
+        .map_err(|e| format!("kai mcp: {e}"))?;
+    resp.into_json().map_err(|e| e.to_string())
+}
+
+/// Streaming chat (Android parity): real Kai answer via the MCP pipeline,
+/// delivered through the same token events. The MCP endpoint is
+/// single-shot, so the full answer arrives as one event — display pacing
+/// only, never canned text. Frontend unchanged.
+#[tauri::command]
+fn chat_stream(window: Window, model: String, prompt: String, app: tauri::AppHandle, procs: State<Procs>) -> Result<(), String> {
+    ensure_mcp(&app, procs)?;
     std::thread::spawn(move || {
-        let agent: ureq::Agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(300))
-            .build();
-        let body = serde_json::json!({"model": model, "prompt": prompt, "stream": true});
         let done = (|| -> Result<(), String> {
-            let resp = agent
-                .post("http://127.0.0.1:11434/api/generate")
-                .send_json(body)
-                .map_err(|e| format!("ollama: {e}"))?;
-            let reader = std::io::BufReader::new(resp.into_reader());
-            for line in reader.lines().map_while(Result::ok) {
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-                let v: serde_json::Value =
-                    serde_json::from_str(&line).map_err(|e| e.to_string())?;
-                if v.get("done").and_then(|d| d.as_bool()).unwrap_or(false) {
-                    break;
-                }
-                if let Some(tok) = v.get("response").and_then(|r| r.as_str()) {
-                    let _ = window.emit("chat-token", tok.to_string());
-                }
-            }
+            let text = kai_ask(&model, &prompt)?;
+            let _ = window.emit("chat-token", text);
             Ok(())
         })();
         let _ = window.emit(
@@ -213,7 +251,8 @@ fn main() {
             start_bridge,
             stop_bridge,
             chat,
-            chat_stream
+            chat_stream,
+            history
         ])
         .run(tauri::generate_context!())
         .expect("axiom-local failed to start");
