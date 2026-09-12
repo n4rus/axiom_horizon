@@ -8,6 +8,9 @@
 # Generic patterns only; no project-specific filenames.
 # ==================================================
 .opencode/
+!.opencode/skills/
+!.opencode/skills/kai/
+!.opencode/skills/kai/SKILL.md
 opencode_history_full/
 opencode_sessions/
 opencode*.json*
