@@ -128,12 +128,22 @@ async function send() {
   const model = el("model").value;
   const prompt = el("prompt").value.trim();
   if (!model || !prompt) return;
-  el("btn-send").disabled = true;
-  addMsg("user", prompt, (lang === "pt" ? "você" : "you") + " · " + fmtTime(new Date()));
+  el("btn-send").disabled = true;  addMsg("user", prompt, (lang === "pt" ? "você" : "you") + " · " + fmtTime(new Date()));
   el("prompt").value = "";
   const t0 = performance.now();
-  const bodyEl = addMsg("assistant", t("thinking"), "");
-  bodyEl.textContent = "";
+  // Footer div created upfront so the stamp has a home even if the
+  // model streams nothing before done.
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "msg-body";
+  const footEl = document.createElement("div");
+  footEl.className = "msg-meta";
+  footEl.textContent = "…";
+  wrap.appendChild(bodyEl);
+  wrap.appendChild(footEl);
+  el("live").appendChild(wrap);
+  wrap.scrollIntoView({ block: "nearest" });
   const { listen } = window.__TAURI__.event;
   const secs = () => ((performance.now() - t0) / 1000).toFixed(1) + "s";
   const unlistenToken = await listen("chat-token", (e) => {
@@ -142,9 +152,8 @@ async function send() {
   });
   const unlistenDone = await listen("chat-done", (e) => {
     if (e.payload) bodyEl.textContent += "\n[error: " + e.payload + "]";
-    const foot = bodyEl.nextSibling;
-    const stamp = "kai · " + model + " · " + secs() + " · " + fmtTime(new Date());
-    if (foot && foot.className === "msg-meta") foot.textContent = stamp;
+    if (!bodyEl.textContent) bodyEl.textContent = "—";
+    footEl.textContent = "kai · " + model + " · " + secs() + " · " + fmtTime(new Date());
     el("btn-send").disabled = false;
     unlistenToken();
     unlistenDone();
