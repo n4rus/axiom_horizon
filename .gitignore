@@ -169,6 +169,7 @@ desktop/src-tauri/target/
 !README.md
 !MANUAL.md
 !wiki_2_done.md
+!TRIAL.md
 # Grants directory contents ARE allowed (subdir is not ignored)
 !grants/
 !grants/**/*.md
