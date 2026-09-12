@@ -21,6 +21,7 @@ const I18N = {
     ask_placeholder: "Ask your local models…", thinking: "thinking (kai)…",
     no_history: "No history yet — chat first, then reload.",
     msgs: "messages",
+    warming: "Kai is warming up ({s}s) — first boot loads models, your message sends automatically…",
   },
   pt: {
     tagline: "Computador de IA privado. Sem nuvem. Sem assinatura. Nada sai da máquina.",
@@ -33,6 +34,7 @@ const I18N = {
     ask_placeholder: "Pergunte aos seus modelos locais…", thinking: "pensando (kai)…",
     no_history: "Sem histórico ainda — converse primeiro, depois recarregue.",
     msgs: "mensagens",
+    warming: "Kai está aquecendo ({s}s) — a primeira inicialização carrega os modelos, sua mensagem será enviada automaticamente…",
   },
 };
 let lang = localStorage.getItem("axiom-lang") || "en";
@@ -161,6 +163,45 @@ async function send() {
   try {
     await invoke("chat_stream", { model, prompt });
   } catch (e) {
+    const msg = String(e);
+    if (msg.includes("warming up")) {
+      // MCP cold boot: show loading bar, poll status, auto-send when ready.
+      bodyEl.innerHTML = "";
+      const bar = document.createElement("div");
+      bar.className = "loadbar";
+      const fill = document.createElement("div");
+      fill.className = "loadbar-fill";
+      bar.appendChild(fill);
+      const note = document.createElement("div");
+      note.className = "msg-meta";
+      bodyEl.appendChild(bar);
+      bodyEl.appendChild(note);
+      const tStart = Date.now();
+      const tick = async () => {
+        const elapsed = Math.floor((Date.now() - tStart) / 1000);
+        note.textContent = t("warming").replace("{s}", elapsed);
+        try {
+          const s = await invoke("get_status");
+          if (s.mcp) {
+            try {
+              await invoke("chat_stream", { model, prompt });
+            } catch (e2) {
+              bodyEl.textContent = "error: " + e2;
+              el("btn-send").disabled = false;
+            }
+            return;
+          }
+        } catch (_) { /* keep polling */ }
+        if (elapsed > 360) {
+          bodyEl.textContent = "error: " + msg;
+          el("btn-send").disabled = false;
+          return;
+        }
+        setTimeout(tick, 3000);
+      };
+      tick();
+      return;
+    }
     bodyEl.textContent = "error: " + e;
     el("btn-send").disabled = false;
   }

@@ -31,6 +31,11 @@ pre#out { background: #0b1020; border-radius: 8px; padding: 12px; white-space: p
 .msg-meta { color: #888; font-size: 0.8em; margin-top: 4px; }
 .sess { display: block; margin: 6px 0; }
 #messages h3 { color: #88ccff; }
+
+/* indeterminate loading bar (cold-boot warmup) */
+.loadbar { height: 8px; background: #0b1020; border: 1px solid #2a3556; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+.loadbar-fill { height: 100%; width: 40%; background: #76b900; border-radius: 4px; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
 label { color: #aaa; margin-right: 8px; }
 
 /* light theme */
