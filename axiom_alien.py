@@ -1971,11 +1971,9 @@ class AxiomAlien:
             self.at.push(reply, label='agent')
             self.at.log_perf()
             return {'answer': reply, 'steps': 0, 'tc': 0}
-        if len(p_lower.split()) <= 2 and (not wants_files):
-            reply = f"alien — I'm here. Session {self.at.meta['current_session']}, {self.at.size} attractor points, {self.at.meta['self_mod_count']} self-mods. {self.seed.bracket}"
-            self.at.push(reply, label='agent')
-            self.at.log_perf()
-            return {'answer': reply, 'steps': 0, 'tc': 0}
+        # No short-circuit greetings: every prompt, however short, flows
+        # through the full pipeline (memory, self-state, model) so answers
+        # come from the working machinery, never canned text.
         auto_result = None
         if wants_files:
             import re as _re
@@ -2090,19 +2088,12 @@ class AxiomAlien:
             role = 'assistant' if m['role'] == 'agent' else m['role']
             msgs.append({'role': role, 'content': m['content'][:800]})
         msgs.append({'role': 'system', 'content': f'[Identity: {self.at.identity()}]'})
-        # Structural self-state: every field below is live machine data
-        # (session counters, stored-memory count, code hash) — the system
-        # describing itself so identity answers come from state, not defaults.
-        try:
-            memcount = self.memory.con.execute('SELECT COUNT(*) FROM memory').fetchone()[0]
-        except Exception:
-            memcount = -1
+        # Structural self-state: short name assertion backed by the SELF fact
+        # in SQLite memory. Metrics stay in the [Identity:] line above.
         msgs.append({'role': 'system', 'content':
             f'[Self-state: my name is Kai. I am the persistent local agent on '
-            f'this machine. Session {self.at.meta.get("current_session", "?")} '
-            f'of {self.at.meta.get("session_count", "?")}; {memcount} stored '
-            f'memories across sessions. Answer identity questions from this '
-            f'state, not from model-card defaults.]'})
+            f'this machine, speaking from stored memory across sessions. '
+            f'Answer identity questions from this, not from model-card defaults.]'})
         msgs.append({'role': 'user', 'content': f'[{self.seed.bracket}]\n{prompt}'})
         tool_count = 0
         ka = '10m' if self.gpu.info['total_vram_mb'] >= 6000 else '0s'
