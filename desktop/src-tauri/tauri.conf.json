@@ -21,6 +21,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "appimage"],
+    "icon": ["icons/icon.png"],
     "resources": ["../../axiom_mcp_server.py", "../../kai_bridge.py"],
     "category": "DeveloperTool",
     "shortDescription": "Private local-first AI agent stack",

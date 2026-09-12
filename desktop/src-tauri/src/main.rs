@@ -37,10 +37,28 @@ fn repo_root() -> Result<PathBuf, String> {
 }
 
 /// Bundled-resource lookup first (installed .deb), then the dev fallbacks.
+/// Searches recursively: bundle staging may nest files (e.g. _up_/_up_/).
 fn repo_root_via(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Ok(res) = app.path().resource_dir() {
-        if res.join("axiom_mcp_server.py").exists() {
-            return Ok(res);
+        let mut stack = vec![res.clone()];
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for dir in stack.drain(..) {
+                if dir.join("axiom_mcp_server.py").exists() {
+                    return Ok(dir);
+                }
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for e in entries.flatten() {
+                        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                            next.push(e.path());
+                        }
+                    }
+                }
+            }
+            stack = next;
+            if stack.is_empty() {
+                break;
+            }
         }
     }
     repo_root()
