@@ -11,7 +11,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{Emitter, State, Window};
+use tauri::{Emitter, Manager, State, Window};
 
 struct Procs(Mutex<HashMap<String, Child>>);
 
@@ -34,6 +34,16 @@ fn repo_root() -> Result<PathBuf, String> {
         }
     }
     Err("axiom_mcp_server.py not found — set AXIOM_HOME to the repo root".into())
+}
+
+/// Bundled-resource lookup first (installed .deb), then the dev fallbacks.
+fn repo_root_via(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Ok(res) = app.path().resource_dir() {
+        if res.join("axiom_mcp_server.py").exists() {
+            return Ok(res);
+        }
+    }
+    repo_root()
 }
 
 fn ollama_models() -> Vec<String> {
@@ -61,7 +71,7 @@ struct Status {
 }
 
 #[tauri::command]
-fn get_status(procs: State<Procs>) -> Status {
+fn get_status(app: tauri::AppHandle, procs: State<Procs>) -> Status {
     let models = ollama_models();
     let map = procs.0.lock().unwrap();
     let alive = |k: &str| map.get(k).is_some();
@@ -70,12 +80,12 @@ fn get_status(procs: State<Procs>) -> Status {
         models,
         mcp: alive("mcp"),
         bridge: alive("bridge"),
-        repo: repo_root().map(|p| p.display().to_string()).unwrap_or_default(),
+        repo: repo_root_via(&app).map(|p| p.display().to_string()).unwrap_or_default(),
     }
 }
 
-fn spawn(key: &str, script: &str, procs: State<Procs>) -> Result<String, String> {
-    let root = repo_root()?;
+fn spawn(app: &tauri::AppHandle, key: &str, script: &str, procs: State<Procs>) -> Result<String, String> {
+    let root = repo_root_via(app)?;
     let mut map = procs.0.lock().unwrap();
     if map.contains_key(key) {
         return Ok(format!("{key} already running"));
@@ -103,8 +113,8 @@ fn stop(key: &str, procs: State<Procs>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn start_mcp(procs: State<Procs>) -> Result<String, String> {
-    spawn("mcp", "axiom_mcp_server.py", procs)
+fn start_mcp(app: tauri::AppHandle, procs: State<Procs>) -> Result<String, String> {
+    spawn(&app, "mcp", "axiom_mcp_server.py", procs)
 }
 
 #[tauri::command]
@@ -113,8 +123,8 @@ fn stop_mcp(procs: State<Procs>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn start_bridge(procs: State<Procs>) -> Result<String, String> {
-    spawn("bridge", "kai_bridge.py", procs)
+fn start_bridge(app: tauri::AppHandle, procs: State<Procs>) -> Result<String, String> {
+    spawn(&app, "bridge", "kai_bridge.py", procs)
 }
 
 #[tauri::command]
