@@ -180,19 +180,21 @@ fn kai_ask(model: &str, prompt: &str) -> Result<String, String> {
 }
 
 /// Ensure the MCP service is up (start it if needed), then return.
-/// Cold boot loads models (~3 min measured) — waits up to 6 minutes.
+/// Never blocks: cold boot loads models (~3 min measured), so a starting
+/// service returns a warmup notice and the UI retries via status polling.
 fn ensure_mcp(app: &tauri::AppHandle, procs: State<Procs>) -> Result<(), String> {
     if mcp_alive() {
         return Ok(());
     }
     spawn(app, "mcp", "axiom_mcp_server.py", procs)?;
-    for _ in 0..720 {
+    // Give a fresh spawn a moment, then hand control back immediately.
+    for _ in 0..6 {
         std::thread::sleep(std::time::Duration::from_millis(500));
         if mcp_alive() {
             return Ok(());
         }
     }
-    Err("kai mcp did not come up (check python3 + ollama)".into())
+    Err("Kai is warming up (~3 min first run) — try again shortly.".into())
 }
 
 fn mcp_alive() -> bool {
@@ -256,5 +258,5 @@ fn main() {
             history
         ])
         .run(tauri::generate_context!())
-        .expect("axiom-local failed to start");
+        .expect("kai failed to start");
 }
