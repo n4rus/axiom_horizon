@@ -22,7 +22,7 @@
     "active": true,
     "targets": ["deb", "appimage"],
     "icon": ["icons/icon.png"],
-    "resources": ["../../axiom_mcp_server.py", "../../kai_bridge.py"],
+    "resources": ["../../axiom_mcp_server.py", "../../kai_bridge.py", "../../axiom_alien.py"],
     "category": "DeveloperTool",
     "shortDescription": "Private local-first AI agent stack",
     "longDescription": "Axiom Local runs the Kai engine, MCP server and Ollama models entirely on your machine. No cloud API, no subscription, no data leaves."

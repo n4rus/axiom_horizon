@@ -1197,7 +1197,12 @@ class KnowledgeBase:
         q_emb = _embed(text)
         results: list[tuple[float, str, str, str]] = []
         for row in self.con.execute('SELECT embedding, content, source, title FROM chunks ORDER BY id DESC LIMIT 1000'):
-            stored = list(struct.unpack(f'{len(row[0]) // 4}f', row[0]))
+            blob = row[0]
+            # Defensive: legacy rows may hold TEXT/NULL instead of packed
+            # float32 BLOBs. Skip rather than crash the whole query.
+            if not isinstance(blob, (bytes, bytearray, memoryview)) or len(blob) % 4 != 0:
+                continue
+            stored = list(struct.unpack(f'{len(blob) // 4}f', blob))
             score = _dot(q_emb, stored)
             if score > 0.5:
                 results.append((score, row[1], row[2], row[3]))
@@ -1796,7 +1801,8 @@ class Attractor:
 
     def identity(self) -> str:
         ch = _code_hash()
-        return f'alien — session {self.meta['current_session']}/{self.meta['session_count']} | {self.size} pts var={self.variance():.4f} Xi={self.xi():.4f} | mods={self.meta['self_mod_count']} code={ch[:8]}'
+        return f'kai — session {self.meta['current_session']}/{self.meta['session_count']} | {self.size} pts var={self.variance():.4f} Xi={self.xi():.4f} | mods={self.meta['self_mod_count']} code={ch[:8]}'
+
 
     def start_session(self):
         now = datetime.now(timezone.utc).isoformat()
@@ -1850,6 +1856,7 @@ class AxiomAlien:
         self.metacog = MetaCognition()
         self.value_learner = ValueLearner()
         self.memory = VectorMemory(STATE_DIR / 'memory.db')
+        self._ensure_self()
         self.metrics = MetricsDashboard()
         self.darwin = DarwinArchive()
         self.genetics = GeneticOperators()
@@ -1883,8 +1890,29 @@ class AxiomAlien:
             except Exception:
                 time.sleep(2)
         self._auto_ingest()
+        self._ensure_self()
         self.at.push(self.at.identity(), label='boot')
         self.at.meta['euler_seed'] = self.seed.save()
+
+    def _ensure_self(self):
+        """Seed the machine's own self-fact into persistent memory, once.
+
+        Structural identity, not a canned answer: the fact lives in SQLite,
+        survives restarts, and surfaces only when semantically retrieved —
+        the machine answering from its own memory.
+        """
+        try:
+            rows = self.memory.con.execute(
+                "SELECT COUNT(*) FROM memory WHERE content LIKE 'SELF:%'").fetchone()
+            if rows and rows[0] > 0:
+                return
+            fact = ("SELF: I am Kai, the persistent local agent running on this "
+                    "machine. I remember our conversations across sessions in my "
+                    "on-disk memory, I track my own state (attractor, VFE, bracket), "
+                    "and I improve my own source code through Darwinian evolution.")
+            self.memory.store(_embed(fact), 'agent', fact, 0)
+        except Exception as e:
+            LOG.warning('self-seed skipped: %s', e)
 
     def ask(self, prompt: str, max_steps: int=8) -> dict:
         centroid_before = self.at.centroid
@@ -2062,6 +2090,19 @@ class AxiomAlien:
             role = 'assistant' if m['role'] == 'agent' else m['role']
             msgs.append({'role': role, 'content': m['content'][:800]})
         msgs.append({'role': 'system', 'content': f'[Identity: {self.at.identity()}]'})
+        # Structural self-state: every field below is live machine data
+        # (session counters, stored-memory count, code hash) — the system
+        # describing itself so identity answers come from state, not defaults.
+        try:
+            memcount = self.memory.con.execute('SELECT COUNT(*) FROM memory').fetchone()[0]
+        except Exception:
+            memcount = -1
+        msgs.append({'role': 'system', 'content':
+            f'[Self-state: my name is Kai. I am the persistent local agent on '
+            f'this machine. Session {self.at.meta.get("current_session", "?")} '
+            f'of {self.at.meta.get("session_count", "?")}; {memcount} stored '
+            f'memories across sessions. Answer identity questions from this '
+            f'state, not from model-card defaults.]'})
         msgs.append({'role': 'user', 'content': f'[{self.seed.bracket}]\n{prompt}'})
         tool_count = 0
         ka = '10m' if self.gpu.info['total_vram_mb'] >= 6000 else '0s'
